@@ -298,6 +298,10 @@ def aggregate_tongue_movements(tongue_segmented, keypoint_dfs_trimmed):
         group = group.dropna(subset=["x", "y"]).reset_index(drop=True)
         if group.empty:
             continue
+        
+        # Startpoint: first row
+        startpoint_x = group.loc[0, "x"]
+        startpoint_y = group.loc[0, "y"]
 
         # 1. Find the point furthest from the jaw by Euclidean distance
         euclid_distances = np.sqrt((group["x"] - jaw_x)**2 + (group["y"] - jaw_y)**2)
@@ -333,6 +337,8 @@ def aggregate_tongue_movements(tongue_segmented, keypoint_dfs_trimmed):
 
         excursion_data.append({
             "movement_id": movement_id,
+            "startpoint_x": startpoint_x,
+            "startpoint_y": startpoint_y,
             "endpoint_x": endpoint_x,
             "endpoint_y": endpoint_y,
             "max_x_from_jaw": max_x_from_jaw,
@@ -691,13 +697,15 @@ def plot_basic_kinematics_movement_segment(tongue_segmented, movement_ids=None):
             continue
 
         # Create a figure with two subplots (position and velocity)
-        fig, ax = plt.subplots(2, 1, figsize=(5, 5), sharex=True)
+        fig, ax = plt.subplots(2, 1, figsize=(7, 5), sharex=True)
 
         # Plot Position: offset the x and y coordinates relative to their initial value
         ax[0].plot(filtered_df['time'], filtered_df['x'] - filtered_df['x'].iloc[0],
-                   label='X Position', color='b')
+                   label='X Position', color='b', linestyle='-', marker='o',markersize=2,
+                   linewidth=0.5)
         ax[0].plot(filtered_df['time'], filtered_df['y'] - filtered_df['y'].iloc[0],
-                   label='Y Position', color='r')
+                   label='Y Position', color='r',linestyle='-', marker='o',markersize=2,
+                   linewidth=0.5)
         ax[0].set_ylabel('Change in Pos. (pixel)')
         ax[0].set_title('Position')
         ax[0].legend(bbox_to_anchor=(1.05, 1), loc='upper left')
