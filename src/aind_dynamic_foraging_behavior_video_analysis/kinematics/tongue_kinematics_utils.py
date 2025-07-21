@@ -1116,6 +1116,21 @@ def find_behavior_videos_folder(top_level_folder):
             return os.path.join(root, 'behavior-videos')
     return None
 
+def get_session_name_from_path(lp_csv_path: str) -> str:
+    """
+    Extracts the session name (behavior_<animalID>_<YYYY-MM-DD>_<HH-MM-SS>)
+    from any LP_csv_path format by searching for 'behavior_' and validating.
+    """
+
+    # Regex for expected session format
+    session_pattern = re.compile(r"behavior_\d+_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}")
+
+    match = session_pattern.search(lp_csv_path)
+    if not match:
+        raise ValueError(f"Could not find valid session name in path: {lp_csv_path}")
+
+    return match.group(0)
+
 def load_keypoints_from_csv(path_to_csv):
     """
     Load keypoints from Lightning Pose csv into data frame
