@@ -7,6 +7,7 @@ import scipy
 from scipy.signal import butter, filtfilt
 from scipy.interpolate import interp1d
 import os
+import re
 
 def filter_timestamps_refractory(timestamps, t_refractory):
     
@@ -240,145 +241,113 @@ def add_lick_metadata_to_movements(tongue_movements, licks_df, fields=None, lick
     return merged
 
 
-def aggregate_tongue_movements(tongue_segmented, keypoint_dfs_trimmed):
+import numpy as np
+import pandas as pd
+
+def aggregate_tongue_movements(tongue_segmented: pd.DataFrame,
+                               keypoint_dfs_trimmed: dict) -> pd.DataFrame:
     """
-    Aggregate kinematic and lick features of tongue movements.
+    Aggregate kinematic, lick, and frame-level features of tongue movements.
 
     Parameters:
-        tongue_segmented (pd.DataFrame): Frame-level data with at least
-            'movement_id', 'time_in_session', 'x', 'y', 'xv', 'yv', 'v',df
-            'lick', 'lick_index', and 'trial' columns.
-        keypoint_dfs_trimmed (dict): Dictionary of keypoint dataframes. 
-            Must include 'jaw' with 'x' and 'y' columns.
+        tongue_segmented (pd.DataFrame): Frame-level data with columns:
+            'movement_id', 'time_in_session', 'x', 'y', 'xv', 'yv', 'v',
+            'lick', 'lick_index', 'trial'.
+        keypoint_dfs_trimmed (dict): Dictionary of keypoint DataFrames. Must include 'jaw'.
 
     Returns:
         pd.DataFrame: One row per movement_id with summary statistics.
     """
-    # Ensure lick annotations exist
-    if not all(col in tongue_segmented.columns for col in ["lick", "lick_index"]):
-        print("You need to annotate licks in kinematics: run annotate_licks_in_kinematics(tongue_segmented, licks_df)")
-        return
-    
-    # Kinematic metrics
+    # -- ensure required columns
+    required = {"movement_id", "time_in_session", "x", "y", "v",
+                "xv", "yv", "lick", "lick_index", "trial"}
+    if not required.issubset(tongue_segmented.columns):
+        missing = required - set(tongue_segmented.columns)
+        raise ValueError(f"Missing columns in tongue_segmented: {missing}")
+
+    # 1) Core kinematic metrics per movement
     movement_metrics = tongue_segmented.groupby("movement_id").agg(
-        start_time = ("time_in_session", "min"),
-        end_time   = ("time_in_session", "max"),
+        start_time=("time_in_session", "min"),
+        end_time=("time_in_session", "max"),
         duration=("time_in_session", lambda x: x.max() - x.min()),
-        min_x=("x", "min"),
-        max_x=("x", "max"),
-        min_y=("y", "min"),
-        max_y=("y", "max"),
-        min_xv=("xv", "min"),
-        max_xv=("xv", "max"),
-        min_yv=("yv", "min"),
-        max_yv=("yv", "max"),
-        peak_velocity=("v", "max"),
-        mean_velocity=("v", "mean")
+        min_x=("x", "min"), max_x=("x", "max"),
+        min_y=("y", "min"), max_y=("y", "max"),
+        min_xv=("xv", "min"), max_xv=("xv", "max"),
+        min_yv=("yv", "min"), max_yv=("yv", "max"),
+        peak_velocity=("v", "max"), mean_velocity=("v", "mean")
     )
 
-    # Total distance traveled
+    # 2) Total distance traveled
     tongue_sorted = tongue_segmented.sort_values(["movement_id", "time_in_session"])
-    distance_list = []
-    for movement_id, group in tongue_sorted.groupby("movement_id"):
-        group = group.dropna(subset=["x", "y"]).reset_index(drop=True)
-        if len(group) < 2:
-            total_distance = np.nan
+    distances = []
+    for mid, grp in tongue_sorted.groupby("movement_id"):
+        grp = grp.dropna(subset=["x", "y"]).reset_index(drop=True)
+        if len(grp) < 2:
+            distances.append((mid, np.nan))
         else:
-            distances = np.sqrt(np.diff(group["x"])**2 + np.diff(group["y"])**2)
-            total_distance = distances.sum()
-        distance_list.append((movement_id, total_distance))
-    movement_distances = pd.DataFrame(distance_list, columns=["movement_id", "total_distance"]).set_index("movement_id")
+            d = np.sqrt(np.diff(grp["x"])**2 + np.diff(grp["y"])**2).sum()
+            distances.append((mid, d))
+    movement_distances = pd.DataFrame(distances, columns=["movement_id", "total_distance"]).set_index("movement_id")
 
-    # Max excursion from jaw
-    # TODO: different definitions of endpoints
-    jaw_mean_position = keypoint_dfs_trimmed['jaw'][['x', 'y']].mean()
-    jaw_x, jaw_y = jaw_mean_position['x'], jaw_mean_position['y']
-    excursion_data = []
-    for movement_id, group in tongue_sorted.groupby("movement_id"):
-        group = group.dropna(subset=["x", "y"]).reset_index(drop=True)
-        if group.empty:
+    # 3) Excursion endpoints from jaw
+    jaw_mean = keypoint_dfs_trimmed['jaw'][['x', 'y']].mean()
+    jx, jy = jaw_mean['x'], jaw_mean['y']
+    excursions = []
+    for mid, grp in tongue_sorted.groupby("movement_id"):
+        grp = grp.dropna(subset=["x", "y"]).reset_index(drop=True)
+        if grp.empty:
             continue
-        
-        # Startpoint: first row
-        startpoint_x = group.loc[0, "x"]
-        startpoint_y = group.loc[0, "y"]
-
-        # 1. Find the point furthest from the jaw by Euclidean distance
-        euclid_distances = np.sqrt((group["x"] - jaw_x)**2 + (group["y"] - jaw_y)**2)
-        idx_euclid = euclid_distances.idxmax()
-        row_euclid = group.loc[idx_euclid]
-        endpoint_x = row_euclid["x"]
-        endpoint_y = row_euclid["y"]
-        endpoint_time = row_euclid["time_in_session"]
-        start_time = group["time_in_session"].iloc[0]
-        time_to_endpoint = endpoint_time - start_time
-
-        # Compute angle (0° = forward, increasing counterclockwise)
-        dx = endpoint_x - jaw_x
-        dy = endpoint_y - jaw_y
-        angle_rad = np.arctan2(dy, dx)
-        angle_deg = np.degrees(angle_rad)
-
-        # 2. Find the point farthest from jaw in x-direction (by max difference)
-        diff_x = (group["x"] - jaw_x)
-        idx_x = diff_x.idxmax()
-        max_x_from_jaw = group.loc[idx_x, "x"]
-        max_x_from_jaw_y = group.loc[idx_x, "y"]
-
-        # 3. Find the point farthest from jaw in y-direction (by absolute difference - since L and R licks go diff directions)
-        abs_diff_y = (group["y"] - jaw_y).abs()
-        idx_y = abs_diff_y.idxmax()
-        max_y_from_jaw = group.loc[idx_y, "y"]
-        max_y_from_jaw_x = group.loc[idx_y, "x"]
-
-        # 4. Compute unsigned distances from jaw for x and y
-        max_x_distance = abs(max_x_from_jaw - jaw_x)
-        max_y_distance = abs(max_y_from_jaw - jaw_y)
-
-        excursion_data.append({
-            "movement_id": movement_id,
-            "startpoint_x": startpoint_x,
-            "startpoint_y": startpoint_y,
-            "endpoint_x": endpoint_x,
-            "endpoint_y": endpoint_y,
-            "max_x_from_jaw": max_x_from_jaw,
-            "max_x_from_jaw_y": max_x_from_jaw_y,
-            "max_y_from_jaw": max_y_from_jaw,
-            "max_y_from_jaw_x": max_y_from_jaw_x,
-            "max_x_distance": max_x_distance,
-            "max_y_distance": max_y_distance,
-            "excursion_angle_deg": angle_deg,
-            "time_to_endpoint": time_to_endpoint
+        # start
+        sx, sy = grp.loc[0, ["x", "y"]]
+        # furthest Euclidean
+        ed = np.sqrt((grp["x"] - jx)**2 + (grp["y"] - jy)**2)
+        idx = ed.idxmax(); row = grp.loc[idx]
+        ex, ey = row["x"], row["y"]
+        tt = row["time_in_session"] - grp.loc[0, "time_in_session"]
+        angle = np.degrees(np.arctan2(ey - jy, ex - jx))
+        # max x and y distances separately
+        dx = (grp["x"] - jx); idx_x = dx.idxmax();
+        dy = (grp["y"] - jy).abs(); idx_y = dy.idxmax()
+        excursions.append({
+            "movement_id": mid,
+            "startpoint_x": sx, "startpoint_y": sy,
+            "endpoint_x": ex, "endpoint_y": ey,
+            "time_to_endpoint": tt, "excursion_angle_deg": angle,
+            "max_x_from_jaw": grp.loc[idx_x, "x"], "max_x_from_jaw_y": grp.loc[idx_x, "y"],
+            "max_y_from_jaw": grp.loc[idx_y, "y"], "max_y_from_jaw_x": grp.loc[idx_y, "x"],
+            "max_x_distance": abs(grp.loc[idx_x, "x"] - jx),
+            "max_y_distance": abs(grp.loc[idx_y, "y"] - jy)
         })
+    excursions = pd.DataFrame(excursions).set_index("movement_id")
 
-    excursions = pd.DataFrame(excursion_data).set_index("movement_id")
+    # 4) Frame-level stats: datapoints & dropped frames
+    frame_stats = tongue_segmented.groupby("movement_id").agg(
+        n_datapoints=("x", lambda s: s.notna().sum()),
+        dropped_frames_n=("x", lambda s: s.isna().sum())
+    )
+    frame_stats['dropped_frames_pct'] = (
+        100 * frame_stats['dropped_frames_n'] /
+        (frame_stats['n_datapoints'] + frame_stats['dropped_frames_n'])
+    )
 
-    # Lick-related metrics
+    # 5) Lick info per movement
     lick_info = tongue_segmented.groupby("movement_id").agg(
         has_lick=("lick", "max"),
-        first_lick_index=("lick_index", lambda x: x.dropna().min()),
-        lick_count=("lick_index", lambda x: x.dropna().nunique())
+        first_lick_index=("lick_index", lambda s: s.dropna().min()),
+        lick_count=("lick_index", lambda s: s.dropna().nunique())
     )
 
-    # Trial mapping
-    # NB: use 'first' because some movements can span a go cue -- and mouse can't 'know' it is coming
-    movement_trial = tongue_segmented.groupby("movement_id")["trial"].first()
+    # 6) Trial mapping
+    trial_info = tongue_segmented.groupby("movement_id")["trial"].first()
 
-    # # Group by movement_id and collect all associated trial numbers
-    # movement_trials = tongue_segmented.groupby("movement_id")["trial"].unique()
-    # # Loop through and print only those with multiple trials
-    # for movement_id, trials in movement_trials.items():
-    #     if len(trials) > 1:
-    #         print(f"Movement ID {movement_id} has multiple trials: {trials}")
-
-
-    # Combine everything
+    # 7) Combine all
     movements = pd.concat([
         movement_metrics,
         movement_distances,
         excursions,
+        frame_stats,
         lick_info,
-        movement_trial.rename("trial")
+        trial_info.rename("trial")
     ], axis=1).reset_index()
 
     return movements
