@@ -775,8 +775,8 @@ def plot_keypoint_confidence_analysis(keypoint_dfs, keypt, save_dir=None, save_f
     if save_figures:
         fig.savefig(f"{save_dir}/confidence_analysis.png", dpi=300)
         fig.savefig(f"{save_dir}/confidence_analysis.svg", format="svg", dpi=300)
-
-    plt.show()
+    else:
+        plt.show()
 
 def plot_processing_steps(keypoint_dfs_trimmed, tongue_masked, tongue_filtered, tongue_segmented,
                           start_time=48.5, end_time=54, save_dir=None, save_figures=False):
