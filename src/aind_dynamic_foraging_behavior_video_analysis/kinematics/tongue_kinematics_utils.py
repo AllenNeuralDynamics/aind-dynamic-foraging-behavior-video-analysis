@@ -914,50 +914,77 @@ def integrate_keypoints_with_video_time(video_csv_path, keypoint_dfs):
         else:
             print("Video QC: Frame numbers are sequential with no gaps.")
 
-    # def check_timing_consistency(df, expected_interval=1/500):
-    #     """Check consistency between Behav_Time and Camera_Time."""
-    #     behav_diffs = df['Behav_Time'].diff().dropna()
-    #     camera_diffs = df['Camera_Time'].diff().dropna()
-    #     time_diff = (behav_diffs - camera_diffs).abs()
-    #     flagged_indices = time_diff[time_diff > expected_interval * 2].index
-
-    #     if not flagged_indices.empty:
-    #         print("Warning: Timing differences exceed expected variation.")
-    #         flagged_data = pd.DataFrame({
-    #             'Behav_Time_Diff': behav_diffs.loc[flagged_indices],
-    #             'Camera_Time_Diff': camera_diffs.loc[flagged_indices],
-    #             'Time_Diff': time_diff.loc[flagged_indices]
-    #         })
-    #         print(flagged_data)
-    #     else:
-    #         print("Video QC: Timing differences are within expected range.")
-
-    # def check_timing_consistency(df, expected_interval=1/500):
-    #     """Check consistency between Behav_Time and Camera_Time."""
-    #     pd.set_option('display.float_format', lambda x: '%.10f' % x)  # Ensure full precision
-
-    #     behav_diffs = df['Behav_Time'].diff().dropna()
-    #     camera_diffs = df['Camera_Time'].diff().dropna()
-    #     time_diff = (behav_diffs - camera_diffs).abs()
-    #     flagged_indices = time_diff[time_diff > expected_interval * 2].index
-
-    #     if not flagged_indices.empty:
-    #         print("Warning: Timing differences exceed expected variation.")
-            
-    #         flagged_data = pd.DataFrame({
-    #             'Behav_Time': df.loc[flagged_indices, 'Behav_Time'],
-    #             'Camera_Time': df.loc[flagged_indices, 'Camera_Time'],
-    #             'Behav_Time_Diff': behav_diffs.loc[flagged_indices],
-    #             'Camera_Time_Diff': camera_diffs.loc[flagged_indices],
-    #             'Time_Diff': time_diff.loc[flagged_indices]
-    #         })
-            
-    #         print(flagged_data.to_string(index=True))  # Ensures full display without truncation
-
-    #     else:
-    #         print("Video QC: Timing differences are within expected range.")
-
     check_frame_monotonicity(video_csv)
+
+    # def qc_and_fix_timing(df,
+    #                   time_col='Behav_Time',
+    #                   camera_col='Camera_Time',
+    #                   expected_interval=1/500,
+    #                   tol_multiplier=2,
+    #                   bracket_tol=0.1,
+    #                   auto_fix=True):
+    #     """
+    #     Combined timing QC and optional auto-fix of singleton glitches that
+    #     produce two sequential flagged diffs (e.g. [Δ≈26, Δ≈-24] around one bad frame).
+
+    #     If auto_fix=True, will linearly interpolate the first of each flagged pair.
+    #     Always prints a summary of all flagged diffs and reports any fixes.
+    #     """
+    #     # 1) compute diffs
+    #     behav_diff = df[time_col].diff()
+    #     cam_diff   = df[camera_col].diff()
+    #     delta      = (behav_diff - cam_diff).abs()
+
+    #     # 2) flag any big discrepancies
+    #     thresh  = tol_multiplier * expected_interval
+    #     flagged = sorted(delta[delta > thresh].index.tolist())
+
+    #     # 3) report
+    #     report = pd.DataFrame({
+    #         'Behav_Time':       df.loc[flagged, time_col],
+    #         'Camera_Time':      df.loc[flagged, camera_col],
+    #         'Behav_Time_Diff':  behav_diff.loc[flagged],
+    #         'Camera_Time_Diff': cam_diff.loc[flagged],
+    #         'Time_Diff':        delta.loc[flagged],
+    #     })
+    #     if report.empty:
+    #         print("Video QC: Timing differences are within expected range.")
+    #     else:
+    #         print("Warning: Timing differences exceed expected variation.")
+    #         print(report.to_string())
+
+    #     # 4) auto‐fix any singleton glitches (two‐in‐a‐row pattern)
+    #     if auto_fix and report.shape[0] > 0:
+    #         i = 0
+    #         while i < len(flagged) - 1:
+    #             idx, nxt = flagged[i], flagged[i+1]
+    #             # look specifically for pairs of consecutive indices
+    #             if nxt == idx + 1:
+    #                 # make sure it isn't part of a longer run
+    #                 prev_flag = (i > 0 and flagged[i-1] == idx - 1)
+    #                 next_flag = (i+2 < len(flagged) and flagged[i+2] == nxt + 1)
+    #                 if not prev_flag and not next_flag:
+    #                     # identify which column jumped
+    #                     behav_err = abs(behav_diff.loc[idx] - expected_interval) > thresh
+    #                     cam_err   = abs(cam_diff.loc[idx]   - expected_interval) > thresh
+    #                     if behav_err ^ cam_err:
+    #                         bad_col = time_col if behav_err else camera_col
+    #                         t_prev  = df.at[idx-1, bad_col]
+    #                         t_next  = df.at[nxt, bad_col]
+    #                         # bracket check: expect next−prev ≈ 2×interval
+    #                         if abs((t_next - t_prev) - 2*expected_interval) < bracket_tol:
+    #                             df.at[idx, bad_col] = 0.5 * (t_prev + t_next)
+    #                             print(f"  Fixed idx={idx} in '{bad_col}' by interpolation")
+    #                         else:
+    #                             print(f"  Skipped idx={idx}: bracket check failed")
+    #                     else:
+    #                         print(f"  Ambiguous jump at idx={idx}, skipping fix")
+    #                     # skip over this pair
+    #                     i += 2
+    #                     continue
+    #             i += 1
+
+    #     return df
 
     def qc_and_fix_timing(df,
                       time_col='Behav_Time',
@@ -967,65 +994,55 @@ def integrate_keypoints_with_video_time(video_csv_path, keypoint_dfs):
                       bracket_tol=0.1,
                       auto_fix=True):
         """
-        Combined timing QC and optional auto-fix of singleton glitches that
-        produce two sequential flagged diffs (e.g. [Δ≈26, Δ≈-24] around one bad frame).
+        QC and fix timing inconsistencies, including:
+        - Large timing differences
+        - Backward-in-time frames
 
-        If auto_fix=True, will linearly interpolate the first of each flagged pair.
-        Always prints a summary of all flagged diffs and reports any fixes.
+        If auto_fix=True, any isolated bad frame is fixed by interpolation if
+        bracketed by good frames.
         """
-        # 1) compute diffs
         behav_diff = df[time_col].diff()
         cam_diff   = df[camera_col].diff()
         delta      = (behav_diff - cam_diff).abs()
 
-        # 2) flag any big discrepancies
-        thresh  = tol_multiplier * expected_interval
-        flagged = sorted(delta[delta > thresh].index.tolist())
+        thresh = tol_multiplier * expected_interval
+        flagged_large = set(delta[delta > thresh].index)
+        flagged_backwards = set(behav_diff[behav_diff < 0].index) | set(cam_diff[cam_diff < 0].index)
+        flagged = sorted(flagged_large | flagged_backwards)
 
-        # 3) report
         report = pd.DataFrame({
             'Behav_Time':       df.loc[flagged, time_col],
             'Camera_Time':      df.loc[flagged, camera_col],
             'Behav_Time_Diff':  behav_diff.loc[flagged],
             'Camera_Time_Diff': cam_diff.loc[flagged],
             'Time_Diff':        delta.loc[flagged],
+            'Backward_Flag':    [idx in flagged_backwards for idx in flagged]
         })
+
         if report.empty:
             print("Video QC: Timing differences are within expected range.")
         else:
-            print("Warning: Timing differences exceed expected variation.")
+            print("Warning: Timing differences or backward frames detected.")
             print(report.to_string())
 
-        # 4) auto‐fix any singleton glitches (two‐in‐a‐row pattern)
-        if auto_fix and report.shape[0] > 0:
-            i = 0
-            while i < len(flagged) - 1:
-                idx, nxt = flagged[i], flagged[i+1]
-                # look specifically for pairs of consecutive indices
-                if nxt == idx + 1:
-                    # make sure it isn't part of a longer run
-                    prev_flag = (i > 0 and flagged[i-1] == idx - 1)
-                    next_flag = (i+2 < len(flagged) and flagged[i+2] == nxt + 1)
-                    if not prev_flag and not next_flag:
-                        # identify which column jumped
-                        behav_err = abs(behav_diff.loc[idx] - expected_interval) > thresh
-                        cam_err   = abs(cam_diff.loc[idx]   - expected_interval) > thresh
-                        if behav_err ^ cam_err:
-                            bad_col = time_col if behav_err else camera_col
-                            t_prev  = df.at[idx-1, bad_col]
-                            t_next  = df.at[nxt, bad_col]
-                            # bracket check: expect next−prev ≈ 2×interval
-                            if abs((t_next - t_prev) - 2*expected_interval) < bracket_tol:
-                                df.at[idx, bad_col] = 0.5 * (t_prev + t_next)
-                                print(f"  Fixed idx={idx} in '{bad_col}' by interpolation")
-                            else:
-                                print(f"  Skipped idx={idx}: bracket check failed")
-                        else:
-                            print(f"  Ambiguous jump at idx={idx}, skipping fix")
-                        # skip over this pair
-                        i += 2
-                        continue
-                i += 1
+        if auto_fix:
+            for idx in flagged:
+                if idx <= 0 or idx >= len(df) - 1:
+                    continue  # skip edges
+
+                behav_err = (abs(behav_diff.loc[idx] - expected_interval) > thresh) or (behav_diff.loc[idx] < 0)
+                cam_err   = (abs(cam_diff.loc[idx]   - expected_interval) > thresh) or (cam_diff.loc[idx] < 0)
+                if behav_err ^ cam_err:  # only one column is wrong
+                    bad_col = time_col if behav_err else camera_col
+                    t_prev  = df.at[idx-1, bad_col]
+                    t_next  = df.at[idx+1, bad_col]
+                    if abs((t_next - t_prev) - 2*expected_interval) < bracket_tol:
+                        df.at[idx, bad_col] = 0.5 * (t_prev + t_next)
+                        print(f"  Fixed idx={idx} in '{bad_col}' by interpolation")
+                    else:
+                        print(f"  Skipped idx={idx}: bracket check failed")
+                else:
+                    print(f"  Ambiguous error at idx={idx}, skipping fix")
 
         return df
 
@@ -1035,7 +1052,7 @@ def integrate_keypoints_with_video_time(video_csv_path, keypoint_dfs):
                   camera_col='Camera_Time',
                   expected_interval=1/500,
                   tol_multiplier=2,
-                  bracket_tol=2*(1/500)*0.1,
+                  bracket_tol=0.1,
                   auto_fix=True)
 
 
