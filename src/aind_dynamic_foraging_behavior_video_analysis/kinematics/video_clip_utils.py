@@ -16,7 +16,7 @@ from moviepy.video.io.VideoFileClip import VideoFileClip
 from typing import Dict, List, Optional, Tuple, Union
 
 
-def extract_clips_ffmpeg_after_reencode(input_video_path, timestamps, clip_length, output_dir):
+def extract_clips_ffmpeg_after_reencode(input_video_path, timestamps, clip_length, output_dir, filename_stems=None):
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
@@ -24,7 +24,11 @@ def extract_clips_ffmpeg_after_reencode(input_video_path, timestamps, clip_lengt
         end_time = start_time + clip_length
         input_basename_ext = os.path.basename(input_video_path)
         input_basename, _ = os.path.splitext(input_basename_ext)
-        output_filename = input_basename + f"_clip_{idx+1}_{start_time:.3f}s_to_{end_time:.3f}s.mp4"
+        # Use custom stem if provided, else default
+        if filename_stems is not None and idx < len(filename_stems):
+            output_filename = f"{filename_stems[idx]}_{start_time:.3f}s_to_{end_time:.3f}s.mp4"
+        else:
+            output_filename = input_basename + f"_clip_{idx+1}_{start_time:.3f}s_to_{end_time:.3f}s.mp4"
         output_path = os.path.join(output_dir, output_filename)
 
         if os.path.isfile(output_path):
@@ -35,7 +39,7 @@ def extract_clips_ffmpeg_after_reencode(input_video_path, timestamps, clip_lengt
             '-ss', str(start_time),
             '-i', input_video_path,
             '-t', str(clip_length),
-            '-c', 'copy',             # Copy codec (no re-encoding)
+            '-c', 'copy',
             output_path
         ]
         subprocess.run(command, check=True)
