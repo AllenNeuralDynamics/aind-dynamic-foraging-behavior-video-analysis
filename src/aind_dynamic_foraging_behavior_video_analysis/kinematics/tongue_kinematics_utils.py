@@ -9,6 +9,54 @@ from scipy.interpolate import interp1d
 import os
 import re
 
+
+### ANALYSIS ###
+def select_percentile_movements(
+    df: pd.DataFrame,
+    metric_col: str,
+    percentiles: list = [0, 0.25, 0.5, 0.75, 1.0]
+) -> pd.DataFrame:
+    """
+    Return movement_ids and corresponding metric values at specified percentiles.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Must contain 'movement_id' and the metric column.
+    metric_col : str
+        Name of the numeric column to sort and index into.
+    percentiles : list of float
+        Values between 0 and 1 for desired percentiles.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns: ['movement_id', metric_col, 'percentile']
+    """
+    if metric_col not in df.columns:
+        raise ValueError(f"Column '{metric_col}' not found")
+    series = df[['movement_id', metric_col]].dropna()
+    if not pd.api.types.is_numeric_dtype(series[metric_col]):
+        raise ValueError(f"Column '{metric_col}' must be numeric")
+    if any(p < 0 or p > 1 for p in percentiles):
+        raise ValueError("Percentiles must be in [0, 1]")
+
+    sorted_df = series.sort_values(metric_col).reset_index(drop=True)
+    N = len(sorted_df)
+    if N == 0:
+        return pd.DataFrame(columns=['movement_id', metric_col, 'percentile'])
+
+    rows = []
+    for p in percentiles:
+        idx = int(round(p * (N - 1)))
+        rows.append({
+            'movement_id': int(sorted_df.loc[idx, 'movement_id']),
+            metric_col: sorted_df.loc[idx, metric_col],
+            'percentile': p
+        })
+
+    return pd.DataFrame(rows)
+
 def filter_timestamps_refractory(timestamps, t_refractory):
     
     # Sort the timestamps
@@ -182,6 +230,31 @@ def detect_licks(tongue_df, timestamps, spoutL, spoutR, threshold):
     return detected_licks
 
 ### PROCESSING / ANNOTATING ###
+
+def get_trial_level_df(nwb_df_licks, nwb_df_trials):
+    # Aggregate licks per trial
+    licks_per_trial = nwb_df_licks.groupby('trial').size().rename('lick_count')
+    # Aggregate coverage per trial: percent of licks with a movement
+    covered = nwb_df_licks['nearest_movement_id'].notna().groupby(nwb_df_licks['trial']).mean().rename('coverage_pct')
+    # Lick count in first 10s of each trial
+    first_licks = []
+    for trial, row in nwb_df_trials.set_index('trial').iterrows():
+        start = row['goCue_start_time_in_session']
+        end = start + 10
+        licks_in_window = nwb_df_licks[
+            (nwb_df_licks['trial'] == trial) &
+            (nwb_df_licks['timestamps'] >= start) &
+            (nwb_df_licks['timestamps'] < end)
+        ]
+        first_licks.append(len(licks_in_window))
+    first10s_lick_count = pd.Series(first_licks, index=nwb_df_trials['trial'], name='first10s_lick_count')
+    # Merge with trial info
+    trial_df = nwb_df_trials.set_index('trial').join([licks_per_trial, covered, first10s_lick_count])
+    trial_df['lick_count'] = trial_df['lick_count'].fillna(0).astype(int)
+    trial_df['coverage_pct'] = trial_df['coverage_pct'] * 100
+    trial_df['first10s_lick_count'] = trial_df['first10s_lick_count'].fillna(0).astype(int)
+    return trial_df
+
 def add_lick_metadata_to_movements(tongue_movements, licks_df, fields=None, lick_index_col='first_lick_index'):
     """
     Adds lick-level metadata (e.g., cue_response) from licks_df to tongue_movements
@@ -240,9 +313,6 @@ def add_lick_metadata_to_movements(tongue_movements, licks_df, fields=None, lick
 
     return merged
 
-
-import numpy as np
-import pandas as pd
 
 def aggregate_tongue_movements(tongue_segmented: pd.DataFrame,
                                keypoint_dfs_trimmed: dict) -> pd.DataFrame:
@@ -639,6 +709,86 @@ def kinematics_filter(df, frame_rate=500, cutoff_freq=20, filter_order=8, filter
 
 
 ### PLOTTING ###
+def plot_movement_tiles_scatter(
+    tongue_segmented: pd.DataFrame,
+    movement_ids: list,
+    x_col: str,
+    y_col: str,
+    labels: list = None,
+    color: str = 'gray',
+    s: int = 5,
+    title: str = None,
+    return_fig=False
+):
+    """
+    Plot scatter of any two kinematic columns for a given list of movement_ids.
+
+    Parameters
+    ----------
+    tongue_segmented : pd.DataFrame
+        Frame-level data with at least 'movement_id', x_col, y_col.
+    movement_ids : list
+        Movement IDs to plot (one subplot per movement).
+    x_col : str
+        Column in tongue_segmented to plot on x-axis.
+    y_col : str
+        Column in tongue_segmented to plot on y-axis.
+    labels : list, optional
+        List of strings or values to annotate each subplot (same length as movement_ids).
+    color : str
+        Point color for scatter.
+    s : int
+        Point size for scatter.
+    title : str
+        Title of figure
+    """
+    n = len(movement_ids)
+    fig, axes = plt.subplots(1, n, figsize=(n * 2, 2), sharex=True, sharey=True)
+    if n == 1:
+        axes = [axes]
+
+    # Global axis limits
+    all_x, all_y = [], []
+    for mid in movement_ids:
+        df = tongue_segmented[tongue_segmented['movement_id'] == mid]
+        df = df[[x_col, y_col]].dropna()
+        all_x.extend(df[x_col])
+        all_y.extend(df[y_col])
+    if not all_x:
+        raise RuntimeError("No valid movements found to plot.")
+    xlim = (min(all_x), max(all_x))
+    ylim = (min(all_y), max(all_y))
+
+    for i, (ax, mid) in enumerate(zip(axes, movement_ids)):
+        df = tongue_segmented[tongue_segmented['movement_id'] == mid]
+        df = df[[x_col, y_col]].dropna()
+
+        if len(df) < 1:
+            ax.scatter([0], [0], s=10, color='black')
+        else:
+            ax.scatter(df[x_col], df[y_col], s=s, color=color)
+
+        ax.set_xlim(xlim)
+        ax.set_ylim(ylim)
+        ax.set_xlabel(x_col, fontsize=7)
+        if ax == axes[0]:
+            ax.set_ylabel(y_col, fontsize=7)
+
+        if labels is not None:
+            ax.set_title(str(labels[i]), fontsize=8)
+    
+    if title:
+        plt.suptitle(title, fontsize=10)
+    else:
+        plt.suptitle(f"{y_col} vs {x_col}", fontsize=10)
+    
+    # plt.suptitle(f"{y_col} vs {x_col}", fontsize=10)
+    plt.tight_layout()
+    if return_fig:
+        return fig
+    else:
+        plt.show()
+
 def plot_basic_kinematics_movement_segment(tongue_segmented, movement_ids=None):
     """
     Plot kinematic data for specified movement segments from the tongue_segmented DataFrame (output of segment_movements annotation)
