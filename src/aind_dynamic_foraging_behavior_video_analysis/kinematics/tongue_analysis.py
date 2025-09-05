@@ -326,18 +326,6 @@ def generate_tongue_dfs(predictions_csv_path: Path, data_root: Path, tolerance=0
         tongue_kin: frame-level annotated tongue kinematics (DataFrame)
         tongue_movs: movement-level aggregated tongue movements (DataFrame)
     """
-    # === Imports inside so function is self-contained ===
-    # from aind_dynamic_foraging_behavior_video_analysis.kinematics.kinematics_nwb_utils import get_nwb_file
-    # from aind_dynamic_foraging_behavior_video_analysis.kinematics.tongue_kinematics_utils import (
-    #     load_keypoints_from_csv, find_behavior_videos_folder,
-    #     integrate_keypoints_with_video_time, mask_keypoint_data,
-    #     kinematics_filter, segment_movements_trimnans,
-    #     annotate_trials_in_kinematics, annotate_licks_in_kinematics,
-    #     assign_movements_to_licks, aggregate_tongue_movements,
-    #     add_lick_metadata_to_movements, get_session_name_from_path
-    # )
-    # import aind_dynamic_foraging_data_utils.nwb_utils as nwb_utils
-    # from aind_dynamic_foraging_basic_analysis.licks import annotation
 
     # === 1) Session detection ===
     lp_csv = predictions_csv_path
@@ -392,45 +380,6 @@ def generate_tongue_dfs(predictions_csv_path: Path, data_root: Path, tolerance=0
     print(f"Aggregated trial-level DF shape: {tongue_trials.shape}")
 
     return nwb, tongue_kin, tongue_movs, kps_trim, tongue_trials
-
-
-
-# video and plotting
-
-# def find_labeled_video(session_id, data_root):
-#     # Find the labeled video file for a session_id, searching for any folder that starts with session_id
-#     data_root = Path(data_root)
-#     for subdir in data_root.glob(f"{session_id}*"):
-#         candidate = subdir / "pred_outputs" / "video_preds" / "labeled_videos" / "bottom_camera_labeled.mp4"
-#         if candidate.exists():
-#             return str(candidate)
-#     raise FileNotFoundError(f"Labeled video not found for {session_id}")
-
-# def get_video_time(session_time, tongue_kins):
-#     # Find offset between session time and video time using first row
-#     offset = tongue_kins.iloc[0]['time'] - tongue_kins.iloc[0]['time_in_session']
-#     return session_time + offset
-
-# def extract_trial_clip(
-#     session_id, trial_row, tongue_kins, video_path, save_dir,
-#     clip_duration_s=10.0, pad_s=0.5
-# ):
-#     start = trial_row['goCue_start_time_in_session']
-#     end = start + clip_duration_s
-
-#     # Convert to video time
-#     video_start = get_video_time(start, tongue_kins) - pad_s
-#     video_end = get_video_time(end, tongue_kins) + pad_s
-#     clip_length = video_end - video_start
-
-#     # Filename
-#     trial_num = trial_row.name if hasattr(trial_row, 'name') else trial_row['trial']
-#     filename_stem = f"trial_{trial_num}"
-
-#     extract_clips_ffmpeg_after_reencode(
-#         video_path, [video_start], clip_length, save_dir, filename_stems=[filename_stem]
-#     )
-#     print(f"Saved clip for trial {trial_num} to {save_dir}")
 
     
 def extract_example_clips_for_session(session_id, analysis_root, data_root):
