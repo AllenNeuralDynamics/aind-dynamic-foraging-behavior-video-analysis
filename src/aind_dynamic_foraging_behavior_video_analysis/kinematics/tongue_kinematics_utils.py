@@ -255,11 +255,13 @@ def get_trial_level_df(nwb_df_licks, nwb_df_trials):
     trial_df['first10s_lick_count'] = trial_df['first10s_lick_count'].fillna(0).astype(int)
     return trial_df
 
-def add_lick_metadata_to_movements(tongue_movements, licks_df, fields=None, lick_index_col='first_lick_index'):
+
+def add_lick_metadata_to_movements(tongue_movements, licks_df,
+                                   fields=None, lick_index_col='first_lick_index'):
     """
     Adds lick-level metadata (e.g., cue_response) from licks_df to tongue_movements
     using the lick index specified in `lick_index_col`.
-    
+
     Parameters:
     ----------
     tongue_movements : pd.DataFrame
@@ -284,7 +286,7 @@ def add_lick_metadata_to_movements(tongue_movements, licks_df, fields=None, lick
 
     if fields is None:
         fields = ['cue_response']
-    
+
     # Safety checks
     if not isinstance(tongue_movements, pd.DataFrame):
         raise TypeError("tongue_movements must be a pandas DataFrame.")
@@ -293,25 +295,25 @@ def add_lick_metadata_to_movements(tongue_movements, licks_df, fields=None, lick
     if lick_index_col not in tongue_movements.columns:
         raise ValueError(
             f"'{lick_index_col}' not found in tongue_movements. "
-            f"Ensure you've run earlier steps to annotate lick indices (`annotate_licks_in_movements`, 'aggregate_tongue_movements')."
+            "Ensure you've run earlier steps to annotate lick indices."
         )
     for field in fields:
         if field not in licks_df.columns:
-            raise ValueError(
-                f"'{field}' not found in licks_df. Available columns: {list(licks_df.columns)}"
-            )
+            raise ValueError(f"'{field}' not found in licks_df. Available: {list(licks_df.columns)}")
 
-    # Prepare lick metadata for merge
-    licks_meta = licks_df[fields].copy()
-    licks_meta = licks_meta.reset_index().rename(columns={'index': lick_index_col})
+    out = tongue_movements.copy()
 
-    # Merge and fill missing values if booleans
-    merged = tongue_movements.merge(licks_meta, on=lick_index_col, how='left')
+    # Map each requested field by lick index.
+    # This overwrites with the same values if already present (idempotent).
     for field in fields:
-        if merged[field].dtype == 'boolean' or merged[field].dtype == bool:
-            merged[field] = merged[field].fillna(False)
+        mapped = out[lick_index_col].map(licks_df[field])
+        out[field] = mapped
+        # If boolean-like, fill missing with False
+        if pd.api.types.is_bool_dtype(out[field]) or str(out[field].dtype) == 'boolean':
+            out[field] = out[field].fillna(False)
 
-    return merged
+    return out
+
 
 
 def aggregate_tongue_movements(tongue_segmented: pd.DataFrame,
