@@ -177,3 +177,38 @@ def process_and_label_clips(input_video_path, timestamps, clip_length, clip_outp
 
         create_labeled_video(clip, xs_arr, ys_arr, mask_array=mask_array, filename=labeled_clip_path)
         clip.close()
+
+def find_labeled_video(session_id, data_root):
+    # Find the labeled video file for a session_id, searching for any folder that starts with session_id
+    data_root = Path(data_root)
+    for subdir in data_root.glob(f"{session_id}*"):
+        candidate = subdir / "pred_outputs" / "video_preds" / "labeled_videos" / "bottom_camera_labeled.mp4"
+        if candidate.exists():
+            return str(candidate)
+    raise FileNotFoundError(f"Labeled video not found for {session_id}")
+
+def get_video_time(session_time, tongue_kins):
+    # Find offset between session time and video time using first row
+    offset = tongue_kins.iloc[0]['time'] - tongue_kins.iloc[0]['time_in_session']
+    return session_time + offset
+
+def extract_trial_clip(
+    session_id, trial_row, tongue_kins, video_path, save_dir,
+    clip_duration_s=10.0, pad_s=0.5
+):
+    start = trial_row['goCue_start_time_in_session']
+    end = start + clip_duration_s
+
+    # Convert to video time
+    video_start = get_video_time(start, tongue_kins) - pad_s
+    video_end = get_video_time(end, tongue_kins) + pad_s
+    clip_length = video_end - video_start
+
+    # Filename
+    trial_num = trial_row.name if hasattr(trial_row, 'name') else trial_row['trial']
+    filename_stem = f"trial_{trial_num}"
+
+    extract_clips_ffmpeg_after_reencode(
+        video_path, [video_start], clip_length, save_dir, filename_stems=[filename_stem]
+    )
+    print(f"Saved clip for trial {trial_num} to {save_dir}")
