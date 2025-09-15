@@ -231,6 +231,104 @@ def detect_licks(tongue_df, timestamps, spoutL, spoutR, threshold):
 
 ### PROCESSING / ANNOTATING ###
 
+import pandas as pd
+
+def annotate_movement_timing(tongue_movements: pd.DataFrame,
+                             df_trials: pd.DataFrame) -> pd.DataFrame:
+    """
+    Annotate each movement with trial-relative metrics and
+    invalidate any movement that spans a go-cue boundary.
+
+    New columns (nullable):
+      • movement_number_in_trial       Int64  
+      • cue_response_movement_number   Int64  
+      • movement_before_cue_response   boolean  
+      • movement_latency_from_go       Float64  
+      • lick_latency                   Float64 (lick_time - go cue time)
+
+    Pre-trial or spanning movements keep all-new as NA.
+    """
+
+    # --- Sanity checks ---
+    required_cols = {'trial', 'start_time', 'end_time', 'cue_response', 'lick_time'}
+    missing = required_cols - set(tongue_movements.columns)
+    if missing:
+        raise ValueError(f"Missing columns in tongue_movements: {missing}")
+    if not {'trial', 'goCue_start_time_in_session'}.issubset(df_trials):
+        raise ValueError("df_trials must contain 'trial' and 'goCue_start_time_in_session'")
+
+    df = tongue_movements.copy()
+
+    # --- Null-out any movement spanning a go-cue ---
+    go_times = df_trials['goCue_start_time_in_session']
+    uniq = df[['movement_id', 'start_time', 'end_time']].drop_duplicates()
+    bad_ids = {
+        m for m, s, e in uniq.itertuples(index=False)
+        if ((go_times > s) & (go_times < e)).any()
+    }
+    df.loc[df['movement_id'].isin(bad_ids), 'trial'] = pd.NA
+
+    # --- Map go-cue times onto each movement row ---
+    go_map = df_trials.set_index('trial')['goCue_start_time_in_session']
+    df['goCue_start_time_in_session'] = df['trial'].map(go_map)
+
+    # --- Validate ordering by (trial, start_time) ---
+    valid_trials = df['trial'].dropna()
+    if not valid_trials.is_monotonic_increasing:
+        raise ValueError("Trials not in ascending order")
+    within_trial_sorted = (
+        df.dropna(subset=['trial'])
+          .groupby('trial', sort=False)['start_time']
+          .apply(lambda x: x.dropna().is_monotonic_increasing)
+          .all()
+    )
+    if not within_trial_sorted:
+        raise ValueError("start_time not monotonic within trial")
+
+    # --- Annotate movement timing ---
+    df['movement_number_in_trial'] = df.groupby('trial').cumcount() + 1
+    df['cue_response_movement_number'] = (
+        df.groupby('trial')['movement_number_in_trial']
+          .transform(lambda m: m.where(df.loc[m.index, 'cue_response']).max())
+    )
+    df['movement_before_cue_response'] = (
+        df['movement_number_in_trial'] < df['cue_response_movement_number']
+    )
+    df['movement_latency_from_go'] = (
+        df['start_time'] - df['goCue_start_time_in_session']
+    ).where(df['start_time'] >= df['goCue_start_time_in_session'])
+
+    # --- Compute lick latency (lick_time - go cue time, only for cue_response trials) ---
+    lick_latency_map = (
+        df.loc[df['cue_response'] == True]
+          .set_index('trial')
+          .eval('lick_time - goCue_start_time_in_session')
+          .rename('lick_latency')
+    )
+    df['lick_latency'] = df['trial'].map(lick_latency_map)
+
+    # --- Cast to nullable dtypes ---
+    df = df.astype({
+        'movement_number_in_trial':       'Int64',
+        'cue_response_movement_number':   'Int64',
+        'movement_before_cue_response':   'boolean',
+        'movement_latency_from_go':       'Float64',
+        'lick_latency':                   'Float64'
+    })
+
+    # --- Blank out all new annotations for pre-trial or invalid rows ---
+    is_pre = df['trial'].isna()
+    df.loc[is_pre, [
+        'movement_number_in_trial',
+        'cue_response_movement_number',
+        'movement_before_cue_response',
+        'movement_latency_from_go',
+        'lick_latency'
+    ]] = pd.NA
+
+    return df
+
+
 def get_trial_level_df(nwb_df_licks, nwb_df_trials):
     # Aggregate licks per trial
     licks_per_trial = nwb_df_licks.groupby('trial').size().rename('lick_count')
