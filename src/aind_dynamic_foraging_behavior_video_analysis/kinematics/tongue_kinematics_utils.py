@@ -259,7 +259,7 @@ def annotate_movement_timing(tongue_movements: pd.DataFrame,
 
     df = tongue_movements.copy()
 
-    # --- Null-out any movement spanning a go-cue ---
+    # --- Null-out any movement spanning a go-cue --- (animal shouldn't initiate tongue movement before go cue)
     go_times = df_trials['goCue_start_time_in_session']
     uniq = df[['movement_id', 'start_time', 'end_time']].drop_duplicates()
     bad_ids = {
@@ -267,6 +267,8 @@ def annotate_movement_timing(tongue_movements: pd.DataFrame,
         if ((go_times > s) & (go_times < e)).any()
     }
     df.loc[df['movement_id'].isin(bad_ids), 'trial'] = pd.NA
+    df.loc[df['movement_id'].isin(bad_ids), 'cue_response'] = pd.NA
+
 
     # --- Map go-cue times onto each movement row ---
     go_map = df_trials.set_index('trial')['goCue_start_time_in_session']
@@ -298,12 +300,13 @@ def annotate_movement_timing(tongue_movements: pd.DataFrame,
         df['start_time'] - df['goCue_start_time_in_session']
     ).where(df['start_time'] >= df['goCue_start_time_in_session'])
 
-    # --- Compute lick latency (lick_time - go cue time, only for cue_response trials) ---
+    # --- Compute lick latency (lick_time - go cue time, only for cue_response trials that are valid) ---
     lick_latency_map = (
-        df.loc[df['cue_response'] == True]
-          .set_index('trial')
-          .eval('lick_time - goCue_start_time_in_session')
-          .rename('lick_latency')
+        df.loc[df['cue_response'].fillna(False)]        
+        .dropna(subset=['trial'])                     
+        .set_index('trial')
+        .eval('lick_time - goCue_start_time_in_session')
+        .rename('lick_latency')
     )
     df['lick_latency'] = df['trial'].map(lick_latency_map)
 
