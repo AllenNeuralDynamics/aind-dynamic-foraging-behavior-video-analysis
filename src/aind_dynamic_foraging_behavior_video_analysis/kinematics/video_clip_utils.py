@@ -17,6 +17,9 @@ from typing import Dict, List, Optional, Tuple, Union
 
 
 def extract_clips_ffmpeg_after_reencode(input_video_path, timestamps, clip_length, output_dir, filename_stems=None):
+    input_video_path = str(input_video_path)
+    output_dir       = str(output_dir)
+    
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 

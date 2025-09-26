@@ -78,8 +78,8 @@ def run_batch_analysis(
     for pred_csv in pred_csv_list:
         pred_csv = Path(pred_csv)
         session_id = get_session_name_from_path(str(pred_csv))
-        session_save_dir = os.path.join(save_root, session_id)
-        os.makedirs(session_save_dir, exist_ok=True)
+        session_save_dir = save_root / session_id
+        session_save_dir.mkdir(parents=True, exist_ok=True)
 
         # ---- Skip check ----
         if not force_rerun and session_already_done(session_save_dir):
@@ -93,22 +93,19 @@ def run_batch_analysis(
             nwb, tongue_kins, tongue_movs, kps_raw, tongue_trials = generate_tongue_dfs(pred_csv, data_root)
 
             # ---- 1a) Save intermediate data ----
-            intermediate_folder = os.path.join(session_save_dir, "intermediate_data")
-            os.makedirs(intermediate_folder, exist_ok=True)
+            intermediate_folder = session_save_dir / "intermediate_data"
+            intermediate_folder.mkdir(exist_ok=True)
 
-            # Save tongue_kins and tongue_movs
-            tongue_kins.to_parquet(os.path.join(intermediate_folder, "tongue_kins.parquet"))
-            tongue_movs.to_parquet(os.path.join(intermediate_folder, "tongue_movs.parquet"))
-            tongue_trials.to_parquet(os.path.join(intermediate_folder, "tongue_trials.parquet"))
+            tongue_kins.to_parquet(intermediate_folder / "tongue_kins.parquet")
+            tongue_movs.to_parquet(intermediate_folder / "tongue_movs.parquet")
+            tongue_trials.to_parquet(intermediate_folder / "tongue_trials.parquet")
 
-            # Save each df in kps_raw dict
             for key, df in kps_raw.items():
-                df.to_parquet(os.path.join(intermediate_folder, f"kps_raw_{key}.parquet"))
+                df.to_parquet(intermediate_folder / f"kps_raw_{key}.parquet")
 
-            # Save selected NWB dfs
-            nwb.df_licks.to_parquet(os.path.join(intermediate_folder, "nwb_df_licks.parquet"))
-            nwb.df_trials.to_parquet(os.path.join(intermediate_folder, "nwb_df_trials.parquet"))
-            nwb.df_events.to_parquet(os.path.join(intermediate_folder, "nwb_df_events.parquet"))
+            nwb.df_licks.to_parquet(intermediate_folder / "nwb_df_licks.parquet")
+            nwb.df_trials.to_parquet(intermediate_folder / "nwb_df_trials.parquet")
+            nwb.df_events.to_parquet(intermediate_folder / "nwb_df_events.parquet")
 
             # ---- 2) Run analysis ----
             analyze_tongue_movement_quality(
@@ -117,7 +114,7 @@ def run_batch_analysis(
                 tongue_movs=tongue_movs,
                 tongue_trials=tongue_trials,
                 nwb=nwb,
-                save_dir=session_save_dir,
+                save_dir=str(session_save_dir),
                 percentiles=percentiles,
                 pred_csv=pred_csv
             )
