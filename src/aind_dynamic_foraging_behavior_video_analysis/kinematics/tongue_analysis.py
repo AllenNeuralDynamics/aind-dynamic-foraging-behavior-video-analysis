@@ -20,6 +20,7 @@ from aind_dynamic_foraging_behavior_video_analysis.kinematics.kinematics_nwb_uti
 from aind_dynamic_foraging_behavior_video_analysis.kinematics.tongue_kinematics_utils import (
     load_keypoints_from_csv,
     find_behavior_videos_folder,
+    find_video_csv_path,
     integrate_keypoints_with_video_time,
     mask_keypoint_data,
     kinematics_filter,
@@ -40,13 +41,17 @@ from aind_dynamic_foraging_basic_analysis.licks import annotation
 
 
 # main functions
+def session_already_done(session_save_dir: Path) -> bool:
+    """Check if final analysis output exists for this session."""
+    return (session_save_dir / "tongue_quality_stats.json").exists()
 
 def run_batch_analysis(
     pred_csv_list, 
     data_root, 
     save_root, 
     percentiles=None, 
-    extract_clips=True  
+    extract_clips=True,
+    force_rerun=False  
 ):
     """
     Run analysis for multiple sessions in batch.
@@ -73,11 +78,16 @@ def run_batch_analysis(
     for pred_csv in pred_csv_list:
         pred_csv = Path(pred_csv)
         session_id = get_session_name_from_path(str(pred_csv))
-
-        print(f"\n🔹 Starting analysis for: {session_id}")
         session_save_dir = os.path.join(save_root, session_id)
         os.makedirs(session_save_dir, exist_ok=True)
 
+        # ---- Skip check ----
+        if not force_rerun and session_already_done(session_save_dir):
+            print(f"\nSkipping {session_id} (analysis already complete)")
+            continue
+
+        
+        print(f"\n🔹 Starting analysis for: {session_id}")
         try:
             # ---- 1) Generate DFs ----
             nwb, tongue_kins, tongue_movs, kps_raw, tongue_trials = generate_tongue_dfs(pred_csv, data_root)
@@ -341,7 +351,8 @@ def generate_tongue_dfs(predictions_csv_path: Path, data_root: Path, tolerance=0
     videos_folder = find_behavior_videos_folder(str(data_root / session_id))
     if videos_folder is None:
         raise FileNotFoundError(f"Videos folder not found for session {session_id}")
-    video_csv = Path(videos_folder) / "bottom_camera.csv"
+    # video_csv = Path(videos_folder) / "bottom_camera.csv"
+    video_csv = find_video_csv_path(videos_folder)
     if not video_csv.exists():
         raise FileNotFoundError(f"Expected video CSV at {video_csv}")
     print(f"Found video CSV: {video_csv}")

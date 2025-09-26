@@ -8,6 +8,7 @@ from scipy.signal import butter, filtfilt
 from scipy.interpolate import interp1d
 import os
 import re
+from pathlib import Path
 
 
 ### ANALYSIS ###
@@ -1269,6 +1270,31 @@ def integrate_keypoints_with_video_time(video_csv_path, keypoint_dfs):
         keypoint_dfs_trimmed[key].insert(1, 'time_raw', keypoint_timebase)
 
     return keypoint_dfs_trimmed, video_csv_trimmed
+
+def find_video_csv_path(behavior_videos_path):
+    """
+    Find the video CSV for a session.
+    
+    Accepts either a str or Path as input.
+
+    Priority:
+      1. behavior_videos_path/bottom_camera.csv
+      2. behavior_videos_path/BottomCamera/metadata.csv
+    """
+    # Always convert to Path
+    behavior_videos_path = Path(behavior_videos_path)
+
+    # Option 1
+    video_csv = behavior_videos_path / "bottom_camera.csv"
+    if video_csv.exists():
+        return video_csv
+
+    # Option 2
+    alt_csv = behavior_videos_path / "BottomCamera" / "metadata.csv"
+    if alt_csv.exists():
+        return alt_csv
+
+    return None
 
 def find_behavior_videos_folder(top_level_folder):
     """
