@@ -303,7 +303,7 @@ def annotate_movement_timing(tongue_movements: pd.DataFrame,
 
     # --- Compute lick latency (lick_time - go cue time, only for cue_response trials that are valid) ---
     lick_latency_map = (
-        df.loc[df['cue_response'].fillna(False)]        
+        df.loc[df['cue_response'].astype('boolean').fillna(False)]        
         .dropna(subset=['trial'])                     
         .set_index('trial')
         .eval('lick_time - goCue_start_time_in_session')
