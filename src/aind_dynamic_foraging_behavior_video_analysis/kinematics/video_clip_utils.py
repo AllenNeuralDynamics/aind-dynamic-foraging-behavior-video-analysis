@@ -185,9 +185,10 @@ def find_labeled_video(session_id, data_root):
     # Find the labeled video file for a session_id, searching for any folder that starts with session_id
     data_root = Path(data_root)
     for subdir in data_root.glob(f"{session_id}*"):
-        candidate = subdir / "pred_outputs" / "video_preds" / "labeled_videos" / "bottom_camera_labeled.mp4"
-        if candidate.exists():
-            return str(candidate)
+        labeled_dir = subdir / "pred_outputs" / "video_preds" / "labeled_videos"
+        matches = list(labeled_dir.glob("*_labeled.mp4"))
+        if matches:
+            return str(matches[0])
     raise FileNotFoundError(f"Labeled video not found for {session_id}")
 
 def get_video_time(session_time, tongue_kins):
