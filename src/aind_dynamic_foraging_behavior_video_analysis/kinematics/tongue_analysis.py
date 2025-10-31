@@ -378,7 +378,7 @@ def generate_tongue_dfs(predictions_csv_path: Path, data_root: Path, tolerance=0
     # --- 6) Load NWB and build derived tables/annotations ---
     nwb = get_nwb_file(session_id)
     nwb.df_events = nwb_utils.create_df_events(nwb)
-    nwb.df_trials = nwb_utils.create_df_trials(nwb)
+    nwb.df_trials = nwb_utils.create_df_trials(nwb,cut_interruptions=True)
     nwb.df_licks = annotation.annotate_licks(nwb)
     print(f"NWB load: {len(nwb.df_trials)} trials, {len(nwb.df_licks)} licks")
 
