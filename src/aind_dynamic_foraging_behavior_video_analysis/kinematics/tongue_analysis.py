@@ -34,7 +34,9 @@ from aind_dynamic_foraging_behavior_video_analysis.kinematics.tongue_kinematics_
     get_trial_level_df,
     select_percentile_movements,
     plot_movement_tiles_scatter,
-    plot_keypoint_confidence_analysis
+    plot_keypoint_confidence_analysis,
+    add_time_in_session_from_nwb,
+    annotate_trials_by_gocue
 )
 import aind_dynamic_foraging_data_utils.nwb_utils as nwb_utils
 from aind_dynamic_foraging_basic_analysis.licks import annotation
@@ -150,7 +152,7 @@ def analyze_tongue_movement_quality(
     kps_raw: dict,
     tongue_kins: pd.DataFrame,
     tongue_movs: pd.DataFrame,
-    tongue_trials: pd.DataFrame,  # <-- new
+    tongue_trials: pd.DataFrame,  
     nwb,
     save_dir: str,
     percentiles: list = [0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0],
@@ -372,6 +374,69 @@ def generate_tongue_dfs(predictions_csv_path: Path, data_root: Path, tolerance=0
     print(f"NWB load: {len(nwb.df_trials)} trials, {len(nwb.df_licks)} licks")
 
     tongue_annot = annotate_trials_in_kinematics(tongue_seg, nwb.df_trials)
+    tongue_kin = annotate_licks_in_kinematics(tongue_annot, nwb.df_licks, tolerance=tolerance)
+    nwb.df_licks = assign_movements_to_licks(tongue_kin, nwb.df_licks)
+    print("Annotated kinematics with trials & licks")
+
+    # === 7) Aggregate movements ===
+    tongue_movs = aggregate_tongue_movements(tongue_kin, kps_trim)
+    tongue_movs = add_lick_metadata_to_movements(
+        tongue_movs, nwb.df_licks, fields=['cue_response','rewarded','event']
+    )
+    print(f"Aggregated movements DF shape: {tongue_movs.shape}")
+
+    # === 8) Trial-level DF ===
+    tongue_trials = get_trial_level_df(nwb.df_licks, nwb.df_trials)
+    print(f"Aggregated trial-level DF shape: {tongue_trials.shape}")
+
+    return nwb, tongue_kin, tongue_movs, kps_trim, tongue_trials
+
+def generate_tongue_dfs_new(predictions_csv_path: Path, data_root: Path, tolerance=0.01):
+    """
+    Same as generate_tongue_dfs, but uses:
+      - add_time_in_session_from_nwb()
+      - annotate_trials_by_gocue()
+    """
+    # === 1) Session detection ===
+    lp_csv = predictions_csv_path
+    session_id = get_session_name_from_path(str(lp_csv))
+    print(f"\n=== Generating tongue data for session: {session_id} ===")
+    print(f"Predictions CSV: {lp_csv}")
+
+    # === 2) Load keypoints ===
+    kps = load_keypoints_from_csv(str(lp_csv))
+    print(f"Loaded keypoints: {len(kps)} raw dataframes")
+
+    # === 3) Locate synced video CSV ===
+    videos_folder = find_behavior_videos_folder(str(data_root / session_id))
+    if videos_folder is None:
+        raise FileNotFoundError(f"Videos folder not found for session {session_id}")
+    video_csv = find_video_csv_path(videos_folder)
+    if not video_csv.exists():
+        raise FileNotFoundError(f"Expected video CSV at {video_csv}")
+    print(f"Found video CSV: {video_csv}")
+
+    # === 4) Sync keypoints to video time ===
+    kps_trim, _ = integrate_keypoints_with_video_time(str(video_csv), kps)
+    print(f"Synced keypoints")
+
+    # === 5) Tongue movement segmentation ===
+    tongue_masked = mask_keypoint_data(kps_trim, 'tongue_tip_center', confidence_threshold=0.90)
+    tongue_filtered = kinematics_filter(tongue_masked, cutoff_freq=50, filter_order=4, filter_kind='cubic')
+    tongue_seg = segment_movements_trimnans(tongue_filtered, max_dropped_frames=10)
+    print(f"Segmented {tongue_seg['movement_id'].nunique()} unique movements")
+
+    # === 6) Load NWB and annotate ===
+    nwb = get_nwb_file(session_id)
+    nwb.df_events = nwb_utils.create_df_events(nwb)
+    nwb.df_trials = nwb_utils.create_df_trials(nwb)
+    nwb.df_licks = annotation.annotate_licks(nwb)
+    print(f"NWB load: {len(nwb.df_trials)} trials, {len(nwb.df_licks)} licks")
+
+    # time alignment + trial annotation
+    ts = add_time_in_session_from_nwb(tongue_seg, nwb)            
+    tongue_annot = annotate_trials_by_gocue(ts, nwb.df_trials)    
+    # lick annotation
     tongue_kin = annotate_licks_in_kinematics(tongue_annot, nwb.df_licks, tolerance=tolerance)
     nwb.df_licks = assign_movements_to_licks(tongue_kin, nwb.df_licks)
     print("Annotated kinematics with trials & licks")

@@ -548,6 +548,23 @@ def annotate_trials_in_kinematics(tongue_segmented, df_trials):
     
     return tongue_segmented
 
+def annotate_trials_by_gocue(tongue_with_time, df_trials):
+    """
+    Adds 'trial' to tongue_with_time via merge_asof against df_trials goCue times.
+    (Exactly the same merge you had before.)
+    """
+    merged_df = pd.merge_asof(
+        tongue_with_time,
+        df_trials,
+        left_on='time_in_session',
+        right_on='goCue_start_time_in_session',
+        direction='backward'
+    )
+    out = tongue_with_time.copy()
+    out['trial'] = merged_df['trial']
+    
+    return out
+
 def annotate_licks_in_kinematics(tongue_segmented, df_licks, tolerance=0.01):
     """
     Marks frames in tongue_segmented that occur near lick timestamps in licks_df.
@@ -599,6 +616,14 @@ def assign_movements_to_licks(tongue_segmented, df_licks):
 
     return df_licks
 
+def add_time_in_session_from_nwb(tongue_segmented, nwb):
+    """
+    Adds 'time_in_session' to tongue_segmented using the first goCue time from the NWB file.
+    """
+    ts = tongue_segmented.copy()
+    session_t0 = float(nwb.trials["goCue_start_time"][0])
+    ts["time_in_session"] = ts["time_raw"] - session_t0
+    return ts
 
 def segment_movements(df, max_dropped_frames=3):
     df = df.copy()
