@@ -313,101 +313,50 @@ def analyze_tongue_movement_quality(
     print(f"✅ Finished analysis for {session_id}. Results saved to {save_dir}")
 
 
-
 def generate_tongue_dfs(predictions_csv_path: Path, data_root: Path, tolerance=0.01):
     """
-    Runs the full pipeline for one session and returns the NWB object, 
-    annotated tongue kinematics, and aggregated tongue movements.
+    Run the end-to-end pipeline for a single session and return:
+      - the NWB object (with licks/trials annotated),
+      - frame-level annotated tongue kinematics,
+      - movement-level aggregated tongue movements,
+      - trimmed/synced keypoints,
+      - trial-level aggregates.
 
     Parameters
     ----------
     predictions_csv_path : Path
-        Path to the predictions CSV (LP_csv).
+        Path to the Lightning Pose predictions CSV (LP_csv).
     data_root : Path
-        Root folder containing behavior_<…> session subfolders.
+        Root directory containing session subfolders named like 'behavior_<...>'.
     tolerance : float, optional
-        Lick-kinematics matching tolerance (default 0.01).
+        Max absolute time difference (seconds) when matching licks to kinematics (default 0.01).
 
     Returns
     -------
-    tuple : (nwb, tongue_kin, tongue_movs)
-        nwb: NWBFile object with annotated licks/trials added
-        tongue_kin: frame-level annotated tongue kinematics (DataFrame)
-        tongue_movs: movement-level aggregated tongue movements (DataFrame)
+    tuple
+        (nwb, tongue_kin, tongue_movs, kps_trim, tongue_trials)
+            nwb : NWBFile
+                NWB object with derived tables (events, trials, licks) populated/annotated.
+            tongue_kin : pandas.DataFrame
+                Frame-level, trial/lick-annotated tongue kinematics.
+            tongue_movs : pandas.DataFrame
+                Movement-level aggregates derived from the annotated kinematics.
+            kps_trim : dict or pandas-like
+                Keypoints synchronized to video time and trimmed for analysis.
+            tongue_trials : pandas.DataFrame
+                Trial-level aggregates derived from licks and trials.
     """
-
-    # === 1) Session detection ===
+    # --- 1) Resolve session from predictions path and log context ---
     lp_csv = predictions_csv_path
     session_id = get_session_name_from_path(str(lp_csv))
     print(f"\n=== Generating tongue data for session: {session_id} ===")
     print(f"Predictions CSV: {lp_csv}")
 
-    # === 2) Load keypoints ===
+    # --- 2) Load raw keypoints from predictions CSV ---
     kps = load_keypoints_from_csv(str(lp_csv))
     print(f"Loaded keypoints: {len(kps)} raw dataframes")
 
-    # === 3) Locate synced video CSV ===
-    videos_folder = find_behavior_videos_folder(str(data_root / session_id))
-    if videos_folder is None:
-        raise FileNotFoundError(f"Videos folder not found for session {session_id}")
-    # video_csv = Path(videos_folder) / "bottom_camera.csv"
-    video_csv = find_video_csv_path(videos_folder)
-    if not video_csv.exists():
-        raise FileNotFoundError(f"Expected video CSV at {video_csv}")
-    print(f"Found video CSV: {video_csv}")
-
-    # === 4) Sync keypoints to video time ===
-    kps_trim, _ = integrate_keypoints_with_video_time(str(video_csv), kps)
-    print(f"Synced keypoints")
-
-    # === 5) Tongue movement segmentation ===
-    tongue_masked = mask_keypoint_data(kps_trim, 'tongue_tip_center', confidence_threshold=0.90)
-    tongue_filtered = kinematics_filter(tongue_masked, cutoff_freq=50, filter_order=4, filter_kind='cubic')
-    tongue_seg = segment_movements_trimnans(tongue_filtered, max_dropped_frames=10)
-    print(f"Segmented {tongue_seg['movement_id'].nunique()} unique movements")
-
-    # === 6) Load NWB and annotate ===
-    nwb = get_nwb_file(session_id)
-    nwb.df_events = nwb_utils.create_df_events(nwb)
-    nwb.df_trials = nwb_utils.create_df_trials(nwb)
-    nwb.df_licks = annotation.annotate_licks(nwb)
-    print(f"NWB load: {len(nwb.df_trials)} trials, {len(nwb.df_licks)} licks")
-
-    tongue_annot = annotate_trials_in_kinematics(tongue_seg, nwb.df_trials)
-    tongue_kin = annotate_licks_in_kinematics(tongue_annot, nwb.df_licks, tolerance=tolerance)
-    nwb.df_licks = assign_movements_to_licks(tongue_kin, nwb.df_licks)
-    print("Annotated kinematics with trials & licks")
-
-    # === 7) Aggregate movements ===
-    tongue_movs = aggregate_tongue_movements(tongue_kin, kps_trim)
-    tongue_movs = add_lick_metadata_to_movements(
-        tongue_movs, nwb.df_licks, fields=['cue_response','rewarded','event']
-    )
-    print(f"Aggregated movements DF shape: {tongue_movs.shape}")
-
-    # === 8) Trial-level DF ===
-    tongue_trials = get_trial_level_df(nwb.df_licks, nwb.df_trials)
-    print(f"Aggregated trial-level DF shape: {tongue_trials.shape}")
-
-    return nwb, tongue_kin, tongue_movs, kps_trim, tongue_trials
-
-def generate_tongue_dfs_new(predictions_csv_path: Path, data_root: Path, tolerance=0.01):
-    """
-    Same as generate_tongue_dfs, but uses:
-      - add_time_in_session_from_nwb()
-      - annotate_trials_by_gocue()
-    """
-    # === 1) Session detection ===
-    lp_csv = predictions_csv_path
-    session_id = get_session_name_from_path(str(lp_csv))
-    print(f"\n=== Generating tongue data for session: {session_id} ===")
-    print(f"Predictions CSV: {lp_csv}")
-
-    # === 2) Load keypoints ===
-    kps = load_keypoints_from_csv(str(lp_csv))
-    print(f"Loaded keypoints: {len(kps)} raw dataframes")
-
-    # === 3) Locate synced video CSV ===
+    # --- 3) Find the synchronized video CSV for this session ---
     videos_folder = find_behavior_videos_folder(str(data_root / session_id))
     if videos_folder is None:
         raise FileNotFoundError(f"Videos folder not found for session {session_id}")
@@ -416,45 +365,44 @@ def generate_tongue_dfs_new(predictions_csv_path: Path, data_root: Path, toleran
         raise FileNotFoundError(f"Expected video CSV at {video_csv}")
     print(f"Found video CSV: {video_csv}")
 
-    # === 4) Sync keypoints to video time ===
+    # --- 4) Synchronize keypoints to video timestamps ---
     kps_trim, _ = integrate_keypoints_with_video_time(str(video_csv), kps)
     print(f"Synced keypoints")
 
-    # === 5) Tongue movement segmentation ===
+    # --- 5) Mask, filter, and segment tongue movements ---
     tongue_masked = mask_keypoint_data(kps_trim, 'tongue_tip_center', confidence_threshold=0.90)
     tongue_filtered = kinematics_filter(tongue_masked, cutoff_freq=50, filter_order=4, filter_kind='cubic')
     tongue_seg = segment_movements_trimnans(tongue_filtered, max_dropped_frames=10)
     print(f"Segmented {tongue_seg['movement_id'].nunique()} unique movements")
 
-    # === 6) Load NWB and annotate ===
+    # --- 6) Load NWB and build derived tables/annotations ---
     nwb = get_nwb_file(session_id)
     nwb.df_events = nwb_utils.create_df_events(nwb)
     nwb.df_trials = nwb_utils.create_df_trials(nwb)
     nwb.df_licks = annotation.annotate_licks(nwb)
     print(f"NWB load: {len(nwb.df_trials)} trials, {len(nwb.df_licks)} licks")
 
-    # time alignment + trial annotation
-    ts = add_time_in_session_from_nwb(tongue_seg, nwb)            
-    tongue_annot = annotate_trials_by_gocue(ts, nwb.df_trials)    
-    # lick annotation
+    # Align to session time and annotate trials/licks in kinematics
+    ts = add_time_in_session_from_nwb(tongue_seg, nwb)
+    tongue_annot = annotate_trials_by_gocue(ts, nwb.df_trials)
     tongue_kin = annotate_licks_in_kinematics(tongue_annot, nwb.df_licks, tolerance=tolerance)
     nwb.df_licks = assign_movements_to_licks(tongue_kin, nwb.df_licks)
     print("Annotated kinematics with trials & licks")
 
-    # === 7) Aggregate movements ===
+    # --- 7) Aggregate movement-level features and attach lick metadata ---
     tongue_movs = aggregate_tongue_movements(tongue_kin, kps_trim)
     tongue_movs = add_lick_metadata_to_movements(
         tongue_movs, nwb.df_licks, fields=['cue_response','rewarded','event']
     )
     print(f"Aggregated movements DF shape: {tongue_movs.shape}")
 
-    # === 8) Trial-level DF ===
+    # --- 8) Build trial-level aggregates ---
     tongue_trials = get_trial_level_df(nwb.df_licks, nwb.df_trials)
     print(f"Aggregated trial-level DF shape: {tongue_trials.shape}")
 
     return nwb, tongue_kin, tongue_movs, kps_trim, tongue_trials
 
-    
+
 def extract_example_clips_for_session(session_id, analysis_root, data_root):
     # Load data
     inter_dir = Path(analysis_root) / session_id / "intermediate_data"
