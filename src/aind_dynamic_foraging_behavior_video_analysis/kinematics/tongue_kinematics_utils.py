@@ -270,14 +270,13 @@ def annotate_movement_timing(tongue_movements: pd.DataFrame,
     df.loc[df['movement_id'].isin(bad_ids), 'trial'] = pd.NA
     df.loc[df['movement_id'].isin(bad_ids), 'cue_response'] = pd.NA
 
-
     # --- Map go-cue times onto each movement row ---
     go_map = df_trials.set_index('trial')['goCue_start_time_in_session']
     df['goCue_start_time_in_session'] = df['trial'].map(go_map)
 
     # --- Validate ordering by (trial, start_time) ---
-    valid_trials = df['trial'].dropna()
-    if not valid_trials.is_monotonic_increasing:
+    valid_trials_series = df['trial'].dropna()
+    if not valid_trials_series.is_monotonic_increasing:
         raise ValueError("Trials not in ascending order")
     within_trial_sorted = (
         df.dropna(subset=['trial'])
@@ -292,8 +291,10 @@ def annotate_movement_timing(tongue_movements: pd.DataFrame,
     df['movement_number_in_trial'] = df.groupby('trial').cumcount() + 1
     df['cue_response_movement_number'] = (
         df.groupby('trial')['movement_number_in_trial']
-          .transform(lambda m: m.where(df.loc[m.index, 'cue_response']).max())
+        .transform(lambda m: m[df.loc[m.index, 'cue_response']].iloc[0]
+                    if df.loc[m.index, 'cue_response'].any() else np.nan)
     )
+
     df['movement_before_cue_response'] = (
         df['movement_number_in_trial'] < df['cue_response_movement_number']
     )
@@ -301,15 +302,20 @@ def annotate_movement_timing(tongue_movements: pd.DataFrame,
         df['start_time'] - df['goCue_start_time_in_session']
     ).where(df['start_time'] >= df['goCue_start_time_in_session'])
 
-    # --- Compute lick latency (lick_time - go cue time, only for cue_response trials that are valid) ---
-    lick_latency_map = (
-        df.loc[df['cue_response'].astype('boolean').fillna(False)]        
-        .dropna(subset=['trial'])                     
-        .set_index('trial')
-        .eval('lick_time - goCue_start_time_in_session')
-        .rename('lick_latency')
+    # --- Compute lick latency (first row with cue_response==True per valid trial, by original order) ---
+    valid_trials = set(df_trials['trial'].unique())
+    mask = df['cue_response'].astype('boolean').fillna(False) & df['trial'].isin(valid_trials)
+
+    latencies_first = (
+        df.loc[mask, ['trial', 'goCue_start_time_in_session', 'lick_time']]
+        .dropna(subset=['trial', 'goCue_start_time_in_session', 'lick_time'])
+        .groupby('trial', sort=False)
+        .head(1)  # <-- take the FIRST cue_response row as it appears in df for each trial
+        .assign(lick_latency=lambda d: d['lick_time'] - d['goCue_start_time_in_session'])
+        .set_index('trial')['lick_latency']
     )
-    df['lick_latency'] = df['trial'].map(lick_latency_map)
+
+    df['lick_latency'] = df['trial'].map(latencies_first)
 
     # --- Cast to nullable dtypes ---
     df = df.astype({
@@ -331,6 +337,7 @@ def annotate_movement_timing(tongue_movements: pd.DataFrame,
     ]] = pd.NA
 
     return df
+
 
 
 def get_trial_level_df(nwb_df_licks, nwb_df_trials):
