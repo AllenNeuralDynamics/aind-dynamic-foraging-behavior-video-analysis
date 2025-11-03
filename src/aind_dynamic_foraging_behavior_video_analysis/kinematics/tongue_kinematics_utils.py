@@ -291,8 +291,11 @@ def annotate_movement_timing(tongue_movements: pd.DataFrame,
     df['movement_number_in_trial'] = df.groupby('trial').cumcount() + 1
     df['cue_response_movement_number'] = (
         df.groupby('trial')['movement_number_in_trial']
-        .transform(lambda m: m[df.loc[m.index, 'cue_response']].iloc[0]
-                    if df.loc[m.index, 'cue_response'].any() else np.nan)
+        .transform(lambda m: (
+            m[df.loc[m.index, 'cue_response'].eq(True)].iloc[0]
+            if df.loc[m.index, 'cue_response'].eq(True).any()
+            else np.nan
+        ))
     )
 
     df['movement_before_cue_response'] = (
