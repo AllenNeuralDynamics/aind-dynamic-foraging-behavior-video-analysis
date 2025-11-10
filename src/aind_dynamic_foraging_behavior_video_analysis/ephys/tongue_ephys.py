@@ -1,31 +1,51 @@
-import os
-import re
-import glob
-import json
+from pathlib import Path
+from typing import Sequence
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import seaborn as sns
+import re
 
-from pathlib import Path
-from datetime import datetime
-from typing import Sequence, Optional
 
-from matplotlib import colormaps
+# Data Loading Utilities
+# =========================
+def find_session_dir(session: str, roots: list[Path]) -> Path:
+    """
+    Return scratch folder for a session; try multiple roots.
+    Looks for exact match first, then prefix glob.
+    """
+    pref = get_session_prefix(session)
+    for root in roots:
+        # exact match
+        exact = root / session
+        if exact.exists():
+            return exact
 
-from scipy.stats import linregress, mannwhitneyu
+        # prefix glob
+        hits = sorted(root.glob(pref + "*"))
+        if hits:
+            return hits[0]
 
-import statsmodels.api as sm
-from sklearn.preprocessing import StandardScaler
+    raise FileNotFoundError(
+        f"No scratch folder found in any root for session/prefix: {session} / {pref}"
+    )
 
-from aind_dynamic_foraging_basic_analysis.licks.lick_analysis import load_nwb
-from aind_analysis_arch_result_access.han_pipeline import get_mle_model_fitting
-from aind_dynamic_foraging_behavior_video_analysis.kinematics.tongue_analysis import get_session_name_from_path
-from aind_dynamic_foraging_behavior_video_analysis.kinematics.tongue_kinematics_utils import (
-    annotate_movement_timing,
-    add_lick_metadata_to_movements,
-)
+
+def load_intermediate_data(session_dir: Path) -> dict:
+    """Load the four intermediate parquet tables for a session."""
+    idir = session_dir / "intermediate_data"
+    return {
+        "movs":   pd.read_parquet(idir / "tongue_movs.parquet"),
+        "trials": pd.read_parquet(idir / "nwb_df_trials.parquet"),
+        "licks":  pd.read_parquet(idir / "nwb_df_licks.parquet"),
+        "kins":   pd.read_parquet(idir / "tongue_kins.parquet"),
+        "events": pd.read_parquet(idir / "nwb_df_events.parquet"),
+    }
+
+def get_session_prefix(s: str) -> str:
+    # 'behavior_751004_2024-12-20_13-26-07' -> 'behavior_751004_2024-12-20'
+    return re.sub(r'_\d{2}-\d{2}-\d{2}$', '', str(s))
+
 
 
 # Core Utilities For Rasters
