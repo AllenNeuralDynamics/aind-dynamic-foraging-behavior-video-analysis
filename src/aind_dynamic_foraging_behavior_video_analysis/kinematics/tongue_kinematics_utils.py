@@ -231,9 +231,6 @@ def detect_licks(tongue_df, timestamps, spoutL, spoutR, threshold):
     return detected_licks
 
 ### PROCESSING / ANNOTATING ###
-
-import pandas as pd
-
 def annotate_movement_timing(tongue_movements: pd.DataFrame,
                              df_trials: pd.DataFrame) -> pd.DataFrame:
     """
