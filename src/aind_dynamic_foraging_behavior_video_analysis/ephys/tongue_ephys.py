@@ -75,7 +75,12 @@ def get_events_dict(df_trials, df_licks, tongue_kinematics):
             'reward_time_in_session',
             'trial'
             # No filters needed unless you want to restrict rewarded trials
-        )
+        ),
+        'rewardOutcome': (
+            df_trials,
+            'reward_outcome_time_in_session',
+            'trial'
+        ),
     }
 
 def generate_event_times(df, time_col, trial_col, filters=None, cue_times=None):
