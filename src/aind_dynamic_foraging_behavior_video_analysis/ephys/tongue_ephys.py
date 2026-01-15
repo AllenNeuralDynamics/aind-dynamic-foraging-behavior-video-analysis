@@ -236,7 +236,7 @@ def plot_event_lines(ax, ordered_trials, events):
     Parameters:
         ax (Axes): Matplotlib axis.
         ordered_trials (list): List of trial indices in display order.
-        events (dict): event_name -> {'times': {trial_idx: t_rel}, 'style': dict}
+        events (dict): event_name -> {'times': {trial_idx -> t_rel}, 'style': dict}
 
     Returns:
         Axes: Modified axis.
@@ -244,15 +244,19 @@ def plot_event_lines(ax, ordered_trials, events):
     n = len(ordered_trials)
     for name, info in events.items():
         times_dict = info['times']
-        style = info.get('style', {})
+        label_added = False  # <-- new
+
         for i in range(n):
             t_rel = times_dict.get(i)
             if t_rel is not None:
                 style = info.get('style', {}).copy()
-                if i == 0:
+                if not label_added:
                     style['label'] = name
+                    label_added = True
                 ax.axvline(t_rel, ymin=i/n, ymax=(i+1)/n, **style)
+
     return ax
+
 
 
 # =========================
