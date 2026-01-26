@@ -392,8 +392,11 @@ def generate_tongue_dfs(predictions_csv_path: Path, data_root: Path, tolerance=0
     # --- 7) Aggregate movement-level features and attach lick metadata ---
     tongue_movs = aggregate_tongue_movements(tongue_kin, kps_trim)
     tongue_movs = add_lick_metadata_to_movements(
-        tongue_movs, nwb.df_licks, fields=['cue_response','rewarded','event']
+        tongue_movs, nwb.df_licks, fields=['cue_response','rewarded','event','timestamps']
     )
+    tongue_movs = tongue_movs.rename(columns={'timestamps': 'lick_time'})
+    # per-trial movement timing annotations
+    tongue_movs = annotate_movement_timing(tongue_movs, nwb.df_trials)
     print(f"Aggregated movements DF shape: {tongue_movs.shape}")
 
     # --- 8) Build trial-level aggregates ---
