@@ -29,6 +29,7 @@ from aind_dynamic_foraging_behavior_video_analysis.kinematics.tongue_kinematics_
     annotate_licks_in_kinematics,
     assign_movements_to_licks,
     aggregate_tongue_movements,
+    annotate_movement_timing,
     add_lick_metadata_to_movements,
     get_session_name_from_path,
     get_trial_level_df,
