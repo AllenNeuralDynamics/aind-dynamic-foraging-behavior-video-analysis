@@ -558,7 +558,6 @@ def annotate_trials_in_kinematics(tongue_segmented, df_trials):
 def annotate_trials_by_gocue(tongue_with_time, df_trials):
     """
     Adds 'trial' to tongue_with_time via merge_asof against df_trials goCue times.
-    (Exactly the same merge you had before.)
     """
     merged_df = pd.merge_asof(
         tongue_with_time,
