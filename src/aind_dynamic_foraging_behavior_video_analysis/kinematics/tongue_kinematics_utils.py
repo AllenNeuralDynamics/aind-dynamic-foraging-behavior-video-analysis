@@ -300,7 +300,7 @@ def annotate_movement_timing(tongue_movements: pd.DataFrame,
     )
     df['movement_latency_from_go'] = (
         df['start_time'] - df['goCue_start_time_in_session']
-    ).where(df['start_time'] >= df['goCue_start_time_in_session'])
+    ).where(df['start_time'] > df['goCue_start_time_in_session']) # only count latency for movements that start after the go cue
 
     # --- Compute lick latency (first row with cue_response==True per valid trial, by original order) ---
     valid_trials = set(df_trials['trial'].unique())
