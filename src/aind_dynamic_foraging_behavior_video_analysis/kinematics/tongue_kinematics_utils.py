@@ -1315,13 +1315,13 @@ def find_video_csv_path(behavior_videos_path):
     # Always convert to Path
     behavior_videos_path = Path(behavior_videos_path)
 
-    # Option 1
-    video_csv = behavior_videos_path / "bottom_camera.csv"
+    # Option 1: AIND file standard
+    video_csv = behavior_videos_path / "BottomCamera" / "metadata.csv"
     if video_csv.exists():
         return video_csv
 
-    # Option 2
-    alt_csv = behavior_videos_path / "BottomCamera" / "metadata.csv"
+    # Option 2: old folder format
+    alt_csv = behavior_videos_path / "bottom_camera.csv"
     if alt_csv.exists():
         return alt_csv
 
