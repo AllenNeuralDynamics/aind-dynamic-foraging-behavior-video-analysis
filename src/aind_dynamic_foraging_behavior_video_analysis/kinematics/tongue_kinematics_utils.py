@@ -1302,30 +1302,58 @@ def integrate_keypoints_with_video_time(video_csv_path, keypoint_dfs):
 
     return keypoint_dfs_trimmed, video_csv_trimmed
 
-def find_video_csv_path(behavior_videos_path):
+def find_video_csv_path(behavior_videos_path, camera_name: str = "BottomCamera"):
     """
     Find the video CSV for a session.
     
     Accepts either a str or Path as input.
 
     Priority:
-      1. behavior_videos_path/bottom_camera.csv
-      2. behavior_videos_path/BottomCamera/metadata.csv
+      1) New/AIND: behavior_videos_path/<camera_name>/metadata.csv
+      2) Old/flat: behavior_videos_path/<snake_stem>.csv
     """
     # Always convert to Path
     behavior_videos_path = Path(behavior_videos_path)
 
     # Option 1: AIND file standard
-    video_csv = behavior_videos_path / "BottomCamera" / "metadata.csv"
+    video_csv = behavior_videos_path / camera_name / "metadata.csv"
     if video_csv.exists():
         return video_csv
 
-    # Option 2: old folder format
-    alt_csv = behavior_videos_path / "bottom_camera.csv"
+    # Option 2: old folder format, directly under behavior-videos
+    # naming change: CamelCase -> snake_case (e.g., SideCameraLeft -> side_camera_left)
+    camera_name_old = re.sub(r"(?<!^)([A-Z])", r"_\1", camera_name).lower()
+    alt_csv = behavior_videos_path / f"{camera_name_old}.csv"
     if alt_csv.exists():
         return alt_csv
 
     return None
+
+def find_video_path(behavior_videos_path, camera_name: str = "BottomCamera"):
+    """
+    Find the video file for a session/camera.
+
+    Accepts either a str or Path as input.
+
+    Priority:
+      1) New/AIND: behavior_videos_path/<camera_name>/video.mp4
+      2) Old/flat: behavior_videos_path/<snake_stem>.mp4
+    """
+    behavior_videos_path = Path(behavior_videos_path)
+
+    # Option 1: AIND file standard
+    video_path = behavior_videos_path / camera_name / "video.mp4"
+    if video_path.exists():
+        return video_path
+
+    # Option 2: old folder format, directly under behavior-videos
+    camera_name_old = re.sub(r"(?<!^)([A-Z])", r"_\1", camera_name).lower()
+    alt_video = behavior_videos_path / f"{camera_name_old}.mp4"
+    if alt_video.exists():
+        return alt_video
+
+    return None
+
 
 def find_behavior_videos_folder(top_level_folder):
     """
