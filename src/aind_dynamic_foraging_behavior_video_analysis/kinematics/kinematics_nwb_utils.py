@@ -4,7 +4,7 @@ import glob
 import pandas as pd
 from datetime import datetime
 from aind_dynamic_foraging_basic_analysis.licks.lick_analysis import load_nwb
-from TransferToNWB import bonsai_to_nwb
+from aind_dynamic_foraging_behavior_video_analysis.TransferToNWB import bonsai_to_nwb
 
 def parse_session_id(file_name):
     """
