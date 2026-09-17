@@ -1,3 +1,29 @@
+"""Keypoint I/O, filtering, movement segmentation and per-movement aggregation.
+
+Layering
+--------
+This module is the *lower* layer of the tongue-kinematics stack. It turns
+Lightning-Pose keypoints into the per-session intermediates that the batch
+driver (``tongue_analysis.run_batch_analysis``) writes to disk:
+``tongue_kins.parquet`` (frame level) and ``tongue_movs.parquet`` (one row
+per movement, produced by ``aggregate_tongue_movements``). Analysis code that
+reads those intermediates lives in consuming repos, not here.
+
+Ownership split with the sibling modules:
+
+* ``tongue_kinematics_utils`` (this file) - keypoint loading and masking,
+  filtering, segmentation, movement aggregation and trial/lick annotation.
+* ``tongue_lickometer_utils`` - spout-*contact* lick detection and scoring
+  of detected events against the lickometer. It implements a different lick
+  definition (tongue within a distance of a spout) from the one used here
+  (any tracked excursion matched to a lickometer time), and both are
+  load-bearing.
+* ``video_clip_utils`` - clip extraction and labeled-video helpers.
+
+The plot functions kept here are pipeline QC artefacts written by
+``analyze_tongue_movement_quality``; they carry no styling contract and are
+not meant for presentation figures.
+"""
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -75,160 +101,6 @@ def filter_timestamps_refractory(timestamps, t_refractory):
 
     return filtered_timestamps
 
-
-def calculate_metrics_witheventkeys(ground_truth, detected_events, time_window=0.05):
-    # calculate metrics, output include eventkeys for plotting
-    tp = 0
-    fp = 0
-    fn = 0
-    tn = 0
-    
-    gt_events = np.array(ground_truth)
-    detected = np.array(detected_events)
-    
-    # Sort events for easier comparison
-    gt_events = np.sort(gt_events)
-    detected = np.sort(detected)
-    
-    gt_index = 0
-    det_index = 0
-    
-    # Dictionaries to store event keys
-    gt_keys = {event: 'Unclassified' for event in gt_events}
-    det_keys = {event: 'Unclassified' for event in detected}
-    
-    while gt_index < len(gt_events) and det_index < len(detected):
-        if abs(detected[det_index] - gt_events[gt_index]) <= time_window:
-            tp += 1
-            gt_keys[gt_events[gt_index]] = 'True Positive'
-            det_keys[detected[det_index]] = 'True Positive'
-            gt_index += 1
-            det_index += 1
-        elif detected[det_index] < gt_events[gt_index]:
-            fp += 1
-            det_keys[detected[det_index]] = 'False Positive'
-            det_index += 1
-        else:
-            fn += 1
-            gt_keys[gt_events[gt_index]] = 'False Negative'
-            gt_index += 1
-    
-    # Remaining false positives
-    while det_index < len(detected):
-        fp += 1
-        det_keys[detected[det_index]] = 'False Positive'
-        det_index += 1
-    
-    # Remaining false negatives
-    while gt_index < len(gt_events):
-        fn += 1
-        gt_keys[gt_events[gt_index]] = 'False Negative'
-        gt_index += 1
-    
-    # Assuming we have a defined observation period
-    total_observations = max(gt_events[-1] if gt_events.size else 0,
-                             detected[-1] if detected.size else 0)
-    tn = total_observations - (tp + fp + fn)
-
-    gt_df = pd.DataFrame(list(gt_keys.items()), columns=['Time', 'Status'])
-    det_df = pd.DataFrame(list(det_keys.items()), columns=['Time', 'Status'])
-
-    
-    return tp, fp, fn, tn, gt_df, det_df
-
-
-def calculate_metrics(ground_truth, detected_events, time_window=0.05):
-    # calculate sensitivity / specificity
-    # detect concurrent licks with 50 msec shoulders
-
-    tp = 0
-    fp = 0
-    fn = 0
-    tn = 0
-    
-    gt_events = np.array(ground_truth)
-    detected = np.array(detected_events)
-    
-    # Sort events (likely already sorted)
-    gt_events = np.sort(gt_events)
-    detected = np.sort(detected)
-    
-    gt_index = 0
-    det_index = 0
-    
-    while gt_index < len(gt_events) and det_index < len(detected):
-        if abs(detected[det_index] - gt_events[gt_index]) <= time_window:
-            tp += 1
-            gt_index += 1
-            det_index += 1
-        elif detected[det_index] < gt_events[gt_index]:
-            fp += 1
-            det_index += 1
-        else:
-            fn += 1
-            gt_index += 1
-    
-    # Count remaining false positives
-    fp += len(detected) - det_index
-    
-    # Count remaining false negatives
-    fn += len(gt_events) - gt_index
-    
-    # Assuming we have a defined observation period
-    total_observations = max(gt_events[-1] if gt_events.size else 0,
-                             detected[-1] if detected.size else 0)
-    tn = total_observations - (tp + fp + fn)
-    
-    return tp, fp, fn, tn
-
-
-def detect_licks(tongue_df, timestamps, spoutL, spoutR, threshold):
-    """
-    Detect the timestamps of licks based on proximity to spouts.
-
-    Parameters:
-    - tongue_df: Pandas DataFrame with columns 'x' and 'y' for tongue positions
-    - timestamps: Pandas Series with timestamps corresponding to tongue_df
-    - spoutL: Pandas Series with x and y coordinates of the left spout
-    - spoutR: Pandas Series with x and y coordinates of the right spout
-    - threshold: Distance threshold for detecting a lick
-
-    Returns:
-    - List of timestamps for detected licks
-    """
-
-    def distance(p1, p2):
-        return np.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
-
-    detected_licks = []
-    is_licking = False
-
-    # Convert spout positions to tuples
-    spoutL_pos = (spoutL['x'], spoutL['y'])
-    spoutR_pos = (spoutR['x'], spoutR['y'])
-
-    for i in range(len(tongue_df)):
-        # Extract tongue position
-        tongue_pos = tongue_df.iloc[i]
-        
-        # Skip rows where tongue position is NaN
-        if pd.isna(tongue_pos['x']) or pd.isna(tongue_pos['y']):
-            continue
-        
-        tongue_pos = (tongue_pos['x'], tongue_pos['y'])
-        
-        dist_to_spoutL = distance(tongue_pos, spoutL_pos)
-        dist_to_spoutR = distance(tongue_pos, spoutR_pos)
-
-        if (dist_to_spoutL <= threshold or dist_to_spoutR <= threshold):
-            if not is_licking:
-                # Start of a lick
-                detected_licks.append(timestamps.iloc[i])
-                is_licking = True
-        else:
-            is_licking = False
-
-    return detected_licks
 
 ### PROCESSING / ANNOTATING ###
 def annotate_movement_timing(tongue_movements: pd.DataFrame,
@@ -425,6 +297,108 @@ def add_lick_metadata_to_movements(tongue_movements, licks_df,
 
 
 
+def compute_outbound_metrics(tongue_segmented: pd.DataFrame,
+                             jaw: pd.DataFrame) -> pd.DataFrame:
+    """
+    Outbound-phase metrics per movement_id.
+
+    The outbound phase runs from the first frame of a movement up to and
+    including its endpoint, where the endpoint is the frame farthest
+    (Euclidean) from the session-mean jaw position - the same endpoint
+    ``aggregate_tongue_movements`` reports as ``endpoint_x/y``.
+
+    Parameters
+    ----------
+    tongue_segmented : pd.DataFrame
+        Frame-level data with columns 'movement_id', 'time_in_session',
+        'x', 'y', 'v'.
+    jaw : pd.DataFrame
+        Jaw keypoint frames with columns 'x', 'y'; only the mean is used.
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per movement_id with columns 'out_duration',
+        'out_peak_velocity', 'out_mean_velocity', 'out_total_distance'.
+        When the endpoint is the first frame the outbound phase has zero
+        length: 'out_duration' is 0.0 and 'out_total_distance' is NaN.
+        Movements with no finite x/y frames get NaN throughout.
+
+    Notes
+    -----
+    Provenance: this is the ``compute_outbound_metrics`` that produced the
+    ``out_*`` columns in the existing per-session ``tongue_movs.parquet``
+    files (previously ``add_outbound.ipynb`` / ``tongue_movements_all.ipynb``
+    in the kinematics_analysis capsule). Keep the zero-length conventions
+    above so regenerated intermediates stay comparable.
+    """
+    required = {"movement_id", "time_in_session", "x", "y", "v"}
+    missing = required - set(tongue_segmented.columns)
+    if missing:
+        raise ValueError(
+            "tongue_segmented missing columns: %s" % sorted(missing)
+        )
+    if not {"x", "y"}.issubset(jaw.columns):
+        raise ValueError("jaw must have columns ['x','y']")
+
+    jx, jy = jaw[["x", "y"]].mean().astype(float)
+
+    df = tongue_segmented.sort_values(["movement_id", "time_in_session"])
+
+    rows = []
+    for mid, grp in df.groupby("movement_id", sort=False):
+        g = grp.dropna(subset=["x", "y"]).reset_index(drop=True)
+        if g.empty:
+            rows.append({
+                "movement_id": mid,
+                "out_duration": np.nan,
+                "out_peak_velocity": np.nan,
+                "out_mean_velocity": np.nan,
+                "out_total_distance": np.nan,
+            })
+            continue
+
+        # endpoint = farthest from jaw mean
+        ed = np.sqrt((g["x"].to_numpy(float) - jx) ** 2
+                     + (g["y"].to_numpy(float) - jy) ** 2)
+        idx = int(np.argmax(ed))
+        kept = g.iloc[: idx + 1]
+
+        out_duration = float(kept["time_in_session"].iloc[-1]
+                             - kept["time_in_session"].iloc[0])
+
+        if len(kept) < 2:
+            out_total_distance = np.nan
+        else:
+            x = kept["x"].to_numpy(float)
+            y = kept["y"].to_numpy(float)
+            out_total_distance = float(
+                np.sqrt(np.diff(x) ** 2 + np.diff(y) ** 2).sum()
+            )
+
+        v = kept["v"].to_numpy(float)
+        if np.isfinite(v).any():
+            out_peak_velocity = float(np.nanmax(v))
+            out_mean_velocity = float(np.nanmean(v))
+        else:
+            out_peak_velocity = np.nan
+            out_mean_velocity = np.nan
+
+        rows.append({
+            "movement_id": mid,
+            "out_duration": out_duration,
+            "out_peak_velocity": out_peak_velocity,
+            "out_mean_velocity": out_mean_velocity,
+            "out_total_distance": out_total_distance,
+        })
+
+    return pd.DataFrame(
+        rows,
+        columns=["movement_id", "out_duration", "out_peak_velocity",
+                 "out_mean_velocity", "out_total_distance"],
+    )
+
+
 def aggregate_tongue_movements(tongue_segmented: pd.DataFrame,
                                keypoint_dfs_trimmed: dict) -> pd.DataFrame:
     """
@@ -437,7 +411,10 @@ def aggregate_tongue_movements(tongue_segmented: pd.DataFrame,
         keypoint_dfs_trimmed (dict): Dictionary of keypoint DataFrames. Must include 'jaw'.
 
     Returns:
-        pd.DataFrame: One row per movement_id with summary statistics.
+        pd.DataFrame: One row per movement_id with summary statistics,
+        including the outbound-phase metrics 'out_duration',
+        'out_peak_velocity', 'out_mean_velocity', 'out_total_distance'
+        from ``compute_outbound_metrics``.
     """
     # -- ensure required columns
     required = {"movement_id", "time_in_session", "x", "y", "v",
@@ -521,14 +498,20 @@ def aggregate_tongue_movements(tongue_segmented: pd.DataFrame,
     # 6) Trial mapping
     trial_info = tongue_segmented.groupby("movement_id")["trial"].first()
 
-    # 7) Combine all
+    # 7) Outbound-phase metrics (start -> endpoint), same jaw reference
+    outbound = compute_outbound_metrics(
+        tongue_segmented, keypoint_dfs_trimmed['jaw']
+    ).set_index("movement_id")
+
+    # 8) Combine all
     movements = pd.concat([
         movement_metrics,
         movement_distances,
         excursions,
         frame_stats,
         lick_info,
-        trial_info.rename("trial")
+        trial_info.rename("trial"),
+        outbound,
     ], axis=1).reset_index()
 
     return movements
