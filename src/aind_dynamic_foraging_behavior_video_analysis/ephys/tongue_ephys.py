@@ -1,3 +1,19 @@
+"""Raster / PSTH primitives and per-session intermediate loading for LC ephys.
+
+Layering
+--------
+This is the library-side *primitive* layer for ephys-by-kinematics work:
+locating a session's analysis folder, loading the per-session intermediates
+that ``kinematics.tongue_analysis`` writes, building event tables, and the
+raster / PSTH machinery (``compute_raster_matrix``, ``compute_psth``,
+``RasterPlotter``). It is generic to any tongue-kinematics session.
+
+Analysis configuration, spike counting into windows, per-trial feature
+tables and encoding models are *not* here. They belong to the consuming
+repo (kinematics_analysis: ``ephys_utils.py``, ``encoding_methods.py``),
+which builds on this module. Add code here only if another AIND project
+doing tongue kinematics would want it unchanged.
+"""
 from pathlib import Path
 from typing import Sequence
 

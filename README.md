@@ -9,6 +9,34 @@
 
 
 
+## Scope — what belongs in this library
+
+One test: **would another AIND project doing tongue kinematics want this, unchanged?**
+
+- **Here:** code that produces or annotates the per-session intermediates
+  (`tongue_kins.parquet`, `tongue_movs.parquet`, `kps_raw_*.parquet`,
+  `tongue_quality_stats.json`), runs in the batch pipeline, or is generic to
+  tongue-kinematics sessions — keypoint I/O and filtering, segmentation,
+  aggregation, trial/lick annotation, QC stats, lick detection, video/NWB
+  lookup, clip extraction, raster/PSTH primitives. It must stay stable:
+  consuming capsules install it from `main` with no version pin.
+- **Not here:** analysis built *on top of* the intermediates for one
+  scientific question — encoding models, per-unit result registries, spatial
+  topography, manuscript figure styling. That lives in the consuming repo
+  (e.g. `kinematics_analysis`) and is free to churn.
+- **Plots:** the plot functions here are pipeline QC artefacts written to
+  disk by `analyze_tongue_movement_quality`. They carry no styling contract;
+  presentation figures are the consumer's job.
+- **Contracts:** files this library writes and consumers read are declared
+  next to the writer (see `TONGUE_QUALITY_STATS_FILENAME` in
+  `kinematics/tongue_analysis.py`); read them through the accessor, not the
+  path.
+
+Module layering is spelled out in each module's docstring
+(`kinematics/tongue_kinematics_utils.py`, `kinematics/tongue_lickometer_utils.py`,
+`ephys/tongue_ephys.py`).
+
+
 ## Usage
  - To use this template, click the green `Use this template` button and `Create new repository`.
  - After github initially creates the new repository, please wait an extra minute for the initialization scripts to finish organizing the repo.

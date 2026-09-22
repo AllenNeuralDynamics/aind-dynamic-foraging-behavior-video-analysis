@@ -16,6 +16,50 @@ from moviepy.video.io.VideoFileClip import VideoFileClip
 from typing import Dict, List, Optional, Tuple, Union
 
 
+def extract_clips_ffmpeg_encode(input_video_path, timestamps, clip_length, output_dir):
+    """
+    Cut clips with a libx264 re-encode so the seek is frame-accurate.
+
+    Use this when clip boundaries matter (single-event review clips).
+    ``extract_clips_ffmpeg_after_reencode`` below is the ``-c copy`` variant:
+    much faster, but the start snaps to the previous keyframe.
+    """
+    # Ensure output directory exists
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    
+    for idx, start_time in enumerate(timestamps):
+        # Calculate end time
+        end_time = start_time + clip_length
+        
+        # Define the output filename
+        input_basename_ext = os.path.basename(input_video_path)
+        input_basename, _ = os.path.splitext(input_basename_ext)
+        output_filename = input_basename + f"_clip_{idx+1}_{start_time:.2f}s_to_{end_time:.2f}s.mp4"
+        output_path = os.path.join(output_dir, output_filename)
+
+        # Skip if file already exists
+        if os.path.isfile(output_path):
+            continue
+
+
+        # FFmpeg command to extract the clip
+        command = [
+            'ffmpeg',
+            '-ss', str(start_time),  # Start time
+            '-i', input_video_path,  # Input file
+            '-t', str(clip_length),  # Duration of the clip
+            '-c:v', 'libx264',       # Video codec: H.264
+            '-pix_fmt', 'yuv420p',   # pixel format yuv420p for compatibility
+            output_path               # Output file
+        ]
+        
+        # Execute the command
+        subprocess.run(command, check=True)
+        
+        print(f"Clip saved to {output_path}")
+
+
 def extract_clips_ffmpeg_after_reencode(input_video_path, timestamps, clip_length, output_dir, filename_stems=None):
     input_video_path = str(input_video_path)
     output_dir       = str(output_dir)

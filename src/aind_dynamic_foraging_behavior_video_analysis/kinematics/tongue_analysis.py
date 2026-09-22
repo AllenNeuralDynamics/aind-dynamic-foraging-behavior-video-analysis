@@ -44,9 +44,70 @@ from aind_dynamic_foraging_basic_analysis.licks import annotation
 
 
 # main functions
+TONGUE_QUALITY_STATS_FILENAME = "tongue_quality_stats.json"
+"""Per-session QC summary written by ``analyze_tongue_movement_quality``.
+
+Schema (JSON object, one file per session directory):
+
+- ``session_id`` : str - basename of the session save directory.
+- ``pred_csv`` : str or None - Lightning-Pose predictions CSV the session
+  was processed from.
+- ``total_licks`` : int - lickometer licks in the session.
+- ``licks_with_movement`` : int - of those, licks matched to a tracked
+  tongue movement.
+- ``coverage_pct`` : float - ``100 * licks_with_movement / total_licks``.
+  Recall of the pose stream against the lickometer; it says nothing about
+  precision.
+- ``percentiles`` : {metric: {percentile: value}} - for
+  ``"dropped_frames_n"`` and ``"duration"``, the value of that movement
+  metric at each requested percentile. JSON turns the float percentile keys
+  into strings, so the median duration is ``percentiles["duration"]["0.5"]``.
+
+Consumers should go through ``load_tongue_quality_stats`` and
+``get_quality_summary`` rather than reading the file directly, so a field
+rename here is a one-place change.
+"""
+
+
 def session_already_done(session_save_dir: Path) -> bool:
-    """Check if final analysis output exists for this session."""
-    return (session_save_dir / "tongue_quality_stats.json").exists()
+    """True once the session's quality-stats JSON has been written."""
+    return (Path(session_save_dir) / TONGUE_QUALITY_STATS_FILENAME).exists()
+
+
+def load_tongue_quality_stats(session_save_dir: Path) -> dict:
+    """
+    Read a session's ``tongue_quality_stats.json`` (see
+    ``TONGUE_QUALITY_STATS_FILENAME`` for the schema).
+
+    Raises
+    ------
+    FileNotFoundError
+        If the session has not been processed.
+    """
+    path = Path(session_save_dir) / TONGUE_QUALITY_STATS_FILENAME
+    with open(path, "r") as f:
+        return json.load(f)
+
+
+def get_quality_summary(stats: dict) -> dict:
+    """
+    Reduce a quality-stats dict to the two numbers session-inclusion
+    filters use.
+
+    Returns
+    -------
+    dict
+        ``{"session_id": str, "coverage_pct": float, "duration_p50": float}``.
+        Missing fields come back as 0.0 so a malformed file fails the filter
+        rather than raising.
+    """
+    percentiles = stats.get("percentiles", {}) or {}
+    duration = percentiles.get("duration", {}) or {}
+    return {
+        "session_id": stats.get("session_id"),
+        "coverage_pct": float(stats.get("coverage_pct", 0.0)),
+        "duration_p50": float(duration.get("0.5", duration.get(0.5, 0.0))),
+    }
 
 def run_batch_analysis(
     pred_csv_list, 
@@ -308,7 +369,7 @@ def analyze_tongue_movement_quality(
         "percentiles": percentile_results
     }
 
-    with open(os.path.join(save_dir, "tongue_quality_stats.json"), "w") as f:
+    with open(os.path.join(save_dir, TONGUE_QUALITY_STATS_FILENAME), "w") as f:
         json.dump(results_dict, f, indent=2)
 
     print(f"✅ Finished analysis for {session_id}. Results saved to {save_dir}")
