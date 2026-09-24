@@ -46,7 +46,7 @@ The library's own imports also matter: `aind_dynamic_foraging_basic_analysis` an
 | Date | Stage | Where | Notes |
 |---|---|---|---|
 | 2026-09-24 | Stage 1 done, in review | PR #5 (`build/python-311-support`) | CI passes on 3.9, 3.11 and 3.12 |
-| 2026-09-24 | Stage 2a in progress | `kinematics_analysis` | Branches pushed, capsule committed, 3.9 baseline recorded on `wild` @ `7daae78`. Scratch being saved as a data asset |
+| 2026-09-24 | Stage 2a in progress | `kinematics_analysis` | Baseline recorded (`wild` @ `7daae78`), reference outputs in asset `env_reference_py39`, `env/py312` created. Next: duplicate the capsule |
 
 ### Stage 0: inventory (read-only)
 - [ ] List every Code Ocean capsule and pipeline that installs this library, including the batch
@@ -107,12 +107,14 @@ unsaved `/results`).
       numpy 2.0.2 working with spikeinterface 0.100.0 and numba 0.60.0, and this library at
       `de27558`.*
       Later, compare environments with `diff <(sort environment/py39-freeze.txt) <(pip freeze | sort)`.
-- [ ] Record reference outputs: run `code/env_00_reference_sessions.ipynb` (`wild` @ `6af4d2f`)
+- [x] Record reference outputs: run `code/env_00_reference_sessions.ipynb` (`wild` @ `6af4d2f`)
       in the original 3.9 capsule with `BASELINE_DIR = None`, then save
       `scratch/env_reference/py39/` as a data asset. This is the comparison target. In 2b, the
       same notebook, with `BASELINE_DIR` pointing at that asset, reruns the same sessions and
-      compares every output file.
-- [ ] Create branch `env/py312` from **`wild`** in `kinematics_analysis`. `wild` is the
+      compares every output file. *2026-09-24: done, saved as data asset
+      **`env_reference_py39`**.*
+- [x] Create branch `env/py312` from **`wild`** in `kinematics_analysis`. *2026-09-24: created
+      at `6af4d2f` and pushed.* `wild` is the
       working branch (206 commits ahead of `main` on 2026-09-24) and holds the baseline files.
 - [ ] Duplicate the capsule in Code Ocean and point the duplicate at `env/py312`. Check that its
       git remote is the same GitHub repo and that its data assets are attached. **All Dockerfile
