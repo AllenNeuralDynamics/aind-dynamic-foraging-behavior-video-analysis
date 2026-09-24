@@ -42,35 +42,46 @@ The library's own imports also matter: `aind_dynamic_foraging_basic_analysis` an
 
 ## To-do list
 
+### Status
+| Date | Stage | Where | Notes |
+|---|---|---|---|
+| 2026-09-24 | Stage 1 done (pending CI on GitHub) | branch `build/python-311-support` | Tests pass locally on 3.9, 3.11 and 3.12 |
+
 ### Stage 0: inventory (read-only)
 - [ ] List every Code Ocean capsule and pipeline that installs this library, including the batch
       tongue-kinematics pipeline and the video re-encoding capsule named in
       `VIDEO_CLIPS_MIGRATION_PLAN.md`. For each, record its Python version and whether it pins a SHA or tracks `@main`.
-- [ ] Check `requires-python` on `main` for `aind-dynamic-foraging-basic-analysis` and
-      `aind-dynamic-foraging-data-utils`. They are imported by `kinematics/tongue_analysis.py` and
-      `kinematics/kinematics_nwb_utils.py`, so they must install on 3.11 and 3.12 too.
+      (`lcephystonguemovements` was not found in this repo or `kinematics_analysis`. Locate it.)
+- [x] Check `requires-python` on `main` for `aind-dynamic-foraging-basic-analysis` and
+      `aind-dynamic-foraging-data-utils`. *2026-09-24: both are `>=3.9` and on PyPI (0.4.6 and
+      0.1.56), and both install and import on 3.11 and 3.12.*
 - [ ] Ask collaborators whether anyone runs this library from a personal or other-team 3.9
       environment that isn't in a repo.
 - [ ] Optional: open a blank capsule and note the other base images AIND's CO offers, in case a
       better fit than the template exists.
 
 ### Stage 1: this repo, 3.11/3.12-ready but still `>=3.9` (one PR)
-- [ ] Create local 3.11 and 3.12 envs (`pyenv install 3.11 3.12`; only 3.9.21 is installed now)
-      and run `coverage run -m unittest discover` plus `flake8` in each. Fix anything that breaks.
-- [ ] Add CI. `.github/workflows/` does not exist, although the README refers to
-      `test_and_lint.yml`. Add a `test_and_lint.yml` that runs a matrix over **3.9, 3.11 and
-      3.12** with unittest + flake8 + interrogate.
-      Note: `fail_under = 100` coverage will probably fail. Decide whether to lower it or leave
-      coverage out of the CI gate for now.
-- [ ] Declare runtime `dependencies` in `pyproject.toml`: pandas, numpy, scipy, matplotlib,
-      seaborn, pynwb, opencv-python, moviepy, python-dateutil, and requests (the last is used only
-      lazily in `TransferToNWB.py`). The heavy or sibling ones could go in extras (for example
-      `[nwb]` and `[video]`). This keeps `video_alignment` "pandas-only" for consumers like BEAST.
-      Without declared deps, a 3.11/3.12 resolve can pull numpy 2 / pandas 3 unchecked.
-- [ ] Check behavior with the newer stack a 3.11/3.12 resolve will pick (numpy 2.x, pandas
-      2.x/3.x): look for removed aliases (`np.NaN`, `np.float`), `fillna(method=)`,
-      `DataFrame.append`, and `applymap`. A first grep found none, but run the tests to confirm.
-- [ ] Fix the README badge (`>=3.10`) so it matches reality.
+- [x] Create local 3.11 and 3.12 envs and run the tests plus `flake8`. *Done with
+      `uv venv --python 3.X`. All tests pass on 3.9, 3.11 and 3.12, and no code fixes were needed.*
+- [x] Add CI: `.github/workflows/test_and_lint.yml`, a matrix over 3.9, 3.11 and 3.12.
+      *Decision: the blocking checks are the tests plus
+      `flake8 --select=E9,F63,F7,F82` (syntax errors and undefined names). Coverage (14%),
+      interrogate (74%) and full flake8 (916 issues) are reported, not enforced. They have
+      never met the 100% thresholds in `pyproject.toml`.*
+- [x] Declare runtime dependencies. *Core: `numpy`, `pandas` (enough for `video_alignment` and
+      `tongue_lickometer_utils`). Everything else is in the `kinematics` extra: sibling AIND libs,
+      scipy, matplotlib, seaborn, opencv-python, moviepy, pynwb, python-dateutil, and requests.*
+- [x] Add `tests/test_imports.py`, which imports every module, since most modules have no tests.
+- [x] Check behavior with the newer stack. *A 3.11/3.12 resolve picks numpy 2.4–2.5, pandas 3.0,
+      pynwb 4.2, and moviepy 2.x (3.9 gets pandas 2.3 and numpy 2.0). A static scan for removed
+      numpy/pandas APIs and pandas-3 copy-on-write hazards found nothing. **Tests cover only
+      14% of the code**, so numerical equivalence is verified in Stage 2's reference-session diff,
+      not here.*
+- [x] Fix the README badge (now `>=3.9`) and install instructions (`.[kinematics]`).
+- [ ] CI green on GitHub for all three versions (first run after push). Confirm that `libgl1` is
+      enough for opencv on the runner.
+- [ ] Merge the Stage 1 PR into `main`.
+- [ ] Optional: fix the README coverage and interrogate badges, which claim 100%.
 
 ### Stage 2: migrate consumers
 - [ ] **`kinematics_analysis`** (the blocking one), `environment/Dockerfile`. Work in a
