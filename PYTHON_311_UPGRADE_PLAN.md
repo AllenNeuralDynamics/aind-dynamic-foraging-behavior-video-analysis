@@ -45,7 +45,7 @@ The library's own imports also matter: `aind_dynamic_foraging_basic_analysis` an
 ### Status
 | Date | Stage | Where | Notes |
 |---|---|---|---|
-| 2026-09-24 | Stage 1 done (pending CI on GitHub) | branch `build/python-311-support` | Tests pass locally on 3.9, 3.11 and 3.12 |
+| 2026-09-24 | Stage 1 done, in review | PR #5 (`build/python-311-support`) | CI passes on 3.9, 3.11 and 3.12 |
 
 ### Stage 0: inventory (read-only)
 - [ ] List every Code Ocean capsule and pipeline that installs this library, including the batch
@@ -78,8 +78,8 @@ The library's own imports also matter: `aind_dynamic_foraging_basic_analysis` an
       14% of the code**, so numerical equivalence is verified in Stage 2's reference-session diff,
       not here.*
 - [x] Fix the README badge (now `>=3.9`) and install instructions (`.[kinematics]`).
-- [ ] CI green on GitHub for all three versions (first run after push). Confirm that `libgl1` is
-      enough for opencv on the runner.
+- [x] CI green on GitHub for all three versions. *2026-09-24, PR #5: 3.9, 3.11 and 3.12 all
+      pass, and `libgl1` is enough for opencv on the runner.*
 - [ ] Merge the Stage 1 PR into `main`.
 - [ ] Optional: fix the README coverage and interrogate badges, which claim 100%.
 
