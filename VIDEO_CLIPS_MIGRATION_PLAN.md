@@ -1,358 +1,390 @@
-# Plan: `video_clips.py` — clipping behavioral-event video into labeled-data
+# Plan: `video_clips.py` — clips around behavioral events, frames for labeling
 
-> Status: pre-implementation. To be reviewed by a second model before any code is written.
+> Status: pre-implementation, revision 4. Revision 2 followed an adversarial review; revision 3
+> removed every use of a nominal frame rate; revision 4 hands frame-accurate seeking to
+> `aind-video-utils` and makes a Python upgrade a prerequisite. See "Changes" at the end.
 
-## Context
+## Summary
 
-Clip extraction for pose-training data currently lives in a Code Ocean re-encoding capsule
-(`reencoding_utils.py` / `clip_and_extract.py`) whose main job — re-encoding — is now handled
-elsewhere. The clipping half is worth keeping: it turns behavioral events (go cues, licks) into
-short clips, then samples representative frames into DeepLabCut `labeled-data/` layout for
-hand-labeling.
+Move the clip-and-extract pipeline out of the Code Ocean re-encoding capsule into one new module,
+`video_clips.py`, next to `video_alignment.py`. It does three things:
 
-Three problems motivate a rewrite rather than a copy:
+1. **Pick event times**: go cues and licks, as plain arrays, on the behavior (harp) clock.
+2. **Cut clips**: one short mp4 per event, plus a small JSON *sidecar* recording which source
+   frame the clip starts at.
+3. **Extract frames**: sample about 20 frames per clip into DeepLabCut `labeled-data/` layout.
 
-1. **No provenance.** Clips are cut with `-c copy`, whose start snaps back to the previous
-   keyframe, and frames are named by index *within the clip*. So a hand-labeled `img014.png`
-   cannot be mapped back to a behavior time — the link to trials, licks and kinematics is lost.
-2. **A clock bug.** `process_behavior_video` hardcodes the old headerless 5-column acquisition
-   CSV (`names=["Behav_Time", ...], header=None`) and takes `t_zero` from row 0. On new-format
-   `metadata.csv` (header row, column named `ReferenceTime`) this silently produces wrong times.
-   `video_alignment.py` in this repo already solves this properly.
-3. **Dead and duplicated code.** `timestamp_strategy="lick"` calls `_compute_clip_timestamps_lick`,
-   which was never written — that path raises `NameError`. Meanwhile `kinematics/video_clip_utils.py`
-   holds two more clip cutters, and `kinematics_analysis` notebooks hold several more variants.
+The point of the rewrite is **provenance**: a hand-labeled `labeled-data/<stem>/img00042.png` must
+resolve to an exact source frame, and from there to a behavior time. The current code can't do
+this.
 
-Outcome: **one** dependency-light module in this library, sibling to `video_alignment.py`, where a
-labeled frame resolves back to an exact behavior time.
+## Prerequisite: Python upgrade (Phase 0)
+
+Frame-accurate seeking comes from `aind-video-utils`, which declares `requires-python >= 3.10`.
+Its code does import and run on 3.9 today (checked against 0.7.0), but nothing guarantees that,
+and installing it on 3.9 needs `--ignore-requires-python`. So the upgrade comes first:
+
+1. **Move the capsule image to Python 3.11 or 3.12.** Not 3.10, which reaches end of life in
+   October 2026. 3.9 has been end of life since October 2025.
+2. **Move every other consumer that installs this library.** Consumers install from `main` with
+   no version pin (README "Scope"), so once `requires-python` is raised, a 3.9 environment's
+   `pip install` fails outright instead of falling back to an older version. Known consumers: the
+   clip/re-encoding capsule and the analysis repos built on the kinematics intermediates (e.g.
+   `kinematics_analysis`). Audit for others before raising the floor.
+3. **Then raise the floor here**: `requires-python = ">=3.11"`, black `target_version = ['py311']`,
+   and the README badge (which already says `>=3.10` and disagrees with the pyproject).
+4. **Recommended alongside: start pinning consumers to tags** (`@v0.x`), so future breaking changes
+   are opt-in for consumers rather than a surprise on rebuild.
+
+The code itself needs no changes for the upgrade: it uses no 3.9-specific workarounds, and its
+AIND dependencies (`aind-dynamic-foraging-data-utils`, `-basic-analysis`) declare `>=3.9`.
+
+**If work should start before the upgrade:** everything except the seek (event selection,
+sidecars, frame selection, `labeled_frames_table`) is independent of `aind-video-utils` and can be
+built first, with the seek isolated in `cut_clip`.
+
+## Why rewrite instead of copy
+
+| Problem in the capsule code | Effect |
+|---|---|
+| Clips cut with `-c copy`, which starts at the previous keyframe | The clip's start frame is unknown, so labeled frames can't be traced back |
+| Acquisition CSV read with hardcoded headerless column names | Wrong times on new-format `metadata.csv`. `video_alignment.read_video_csv` already handles both layouts |
+| `timestamp_strategy="lick"` calls a function that was never written | That path raises `NameError` |
+| `cap.set(POS_FRAMES)` before every `read()` in k-means | Re-decodes from a keyframe for every frame, roughly O(n²) |
+| k-means representative chosen with unseeded `random.choice` | Frame selection isn't reproducible |
+| PNGs named `img{:03d}` | The name overflows past frame 999 |
 
 ## Design
 
-### Provenance is one integer
+### Provenance: choose the frame index first, then seek to it
 
-The acquisition CSV *is* a frame index — row `i` holds frame `i`'s `Behav_Time`. So if a clip
-records the source frame index it started at, everything else is a lookup:
+The acquisition CSV is a frame table: row `i` holds frame `i`'s behavior time. So a clip only
+needs to record the source frame it starts at:
 
 ```
-img00042.png  ->  clip frame 42
-              ->  source frame  start_source_index + 42
-              ->  behavior_time = video_csv[time_col].iloc[source_frame]
+labeled-data/<stem>/img00042.png
+  -> clip frame 42
+  -> source frame   start_source_index + 42
+  -> behavior time  csv_times[start_source_index + 42]
 ```
 
-No fps arithmetic, no accumulated drift, no frame-level manifest to store. Three implementation
-requirements make this hold, and each is easy to get wrong:
+**No nominal frame rate is used anywhere.** Two tables stand in for it:
 
-- **`-ss` before `-i` with a re-encode** (accurate seek), not `-c copy`.
-- **`-fps_mode passthrough`** (`-vsync 0`). ffmpeg's default CFR behaviour duplicates or drops
-  frames to hit a target rate, which breaks the 1:1 index mapping.
-- **A frame-count guard**: compare `len(video_csv)` to `ffprobe`'s `nb_frames`. If they disagree,
-  frames were dropped at encode time and the CSV-as-index assumption is invalid — record
-  `frames_verified: false` rather than emit confident wrong times.
+- **The CSV** maps frame index to behavior time. It answers "which frames cover this event?"
+- **The container's per-frame index** (`aind_video_utils.read_mp4_frame_index`) maps frame index
+  to the frame's real presentation timestamp. It answers "where do I seek to reach frame `i`?"
 
-### One sidecar JSON per clip — no dataclasses, no run-level state
+Neither table is converted into the other with `i / fps`. AIND videos can have irregular
+timestamps (the `aind-video-utils` docs describe PTS glitches at concatenation seams), so an
+`i / fps` seek would land on the wrong frame on some real sessions.
 
-A *sidecar* is a companion file sharing a main file's name but not its extension, carrying
-metadata about it (as `.xmp` does for camera RAW, or `.srt` for video). Here each clip gets a
-`.json` beside it:
+#### The frame index: `aind-video-utils`
+
+`read_mp4_frame_index(video_path)` parses the mp4's `moov` sample tables directly (pure
+`struct` + numpy, no decoding; it reads a few MB even for multi-GB files, and works over HTTP with
+range requests). It returns an `Mp4FrameIndex` with each frame's presentation timestamp,
+keyframes and edit list. The parts used here:
+
+| `Mp4FrameIndex` member | Used for |
+|---|---|
+| `presentation_seconds(i)` | The exact input-side `-ss` for presentation-order frame `i`. Subtracts the edit list's `media_time`, so files that don't start at 0 are handled. Raises if frame `i`'s timestamp isn't strictly greater than its predecessor's (a seek there would be ambiguous) |
+| `is_frame_addressing_safe()` | Whether the edit list can be ignored for frame addressing. `False` for empty edits, multi-entry lists, non-unit rates, or trims that drop frames |
+| `n_samples` | The exact frame count, for `frames_verified` |
+| `pts` | The constant-frame-rate check: `constant_frame_rate` is whether `np.diff(np.sort(pts))` is all one value. Recorded, not relied on |
+
+The index is read **once per source video** in `cut_clips_at_events` and passed to each
+`cut_clip`. If `is_frame_addressing_safe()` is `False`, `cut_clips_at_events` raises before
+cutting anything, naming the file: a clip from such a file couldn't be traced back reliably.
+
+Checked on a synthetic variable-frame-rate video with timestamp jumps (ffmpeg 8.1,
+`aind-video-utils` 0.7.0): `extract_frame_by_index` matched a frame-count decode
+(`select=eq(n,i)`) on all 11 frames tested, including frames right at the jumps. The revision 2
+seek, `(i - 0.5) / fps`, got 3 of the 11 wrong.
+
+#### From event and duration to frames
+
+Users ask for clips in seconds. Seconds are converted to frames through the **CSV's own
+timestamps**, so the conversion uses the camera's real frame times, not a nominal rate:
+
+```python
+start_source_index = searchsorted(csv_times, event_behavior_time - duration / 2)
+end_source_index   = searchsorted(csv_times, event_behavior_time + duration / 2)
+n_frames           = end_source_index - start_source_index
+```
+
+The clip covers behavior times `[event - duration/2, event + duration/2)`. If the camera dropped
+frames in that window, the clip is a few frames shorter, which is correct: it still spans the
+requested time. `n_frames` is recorded in the sidecar.
+
+#### From frame index to clip
+
+The index is **decided before cutting**, never derived from a time afterwards:
+
+```python
+seek = index.presentation_seconds(start_source_index)
+ffmpeg -accurate_seek -ss f"{seek:.9f}" -i source.mp4 \
+       -frames:v <n_frames> -fps_mode passthrough -c:v libx264 ...
+```
+
+This is the same seek `aind_video_utils.extract_frame_by_index` uses for single frames, with a
+frame count and an encoder added. The library has no clip-cutting function, so the ffmpeg call
+stays here.
+
+Why each part matters:
+
+- **`-ss` before `-i` with a re-encode** makes ffmpeg decode from the previous keyframe and output
+  the first frame whose timestamp is at or after the seek. Seeking to the frame's exact timestamp
+  lands on it: ffmpeg truncates `-ss` to microseconds, which only ever moves the seek earlier, and
+  the previous frame is milliseconds earlier still.
+- **The index comes from the CSV, the seek from the container.** Converting harp time to video time
+  with `(t - t0)` drifts by about 1 s over a session if the camera's real rate differs from
+  nominal by 0.02%.
+- **`-frames:v n_frames`** instead of `-t duration`. `-t` gave 999 or 1000 frames depending on
+  where the start fell; `-frames:v` is exact.
+- **`-fps_mode passthrough`** stops ffmpeg from duplicating or dropping frames.
+
+An event whose start frame makes `presentation_seconds` raise (non-monotonic timestamps at that
+frame) is skipped with a logged warning; the rest of the video is still cut.
+
+**Remaining assumption, stated in the sidecar:**
+
+- *Encoded frame `i` is acquired frame `i`*: every acquired frame reached the file. This is what
+  the CSV lookup relies on. `frames_verified` records whether `len(csv) == index.n_samples`. A
+  matching count can still hide one dropped plus one duplicated frame; a per-frame check is
+  deferred (see "Out of scope").
+
+### Clip names and sidecars
+
+Clip stems encode the start frame, so a name is unique and stable by construction:
 
 ```
 clips/
-  behavior_751004_2024-12-21_13-28-28_SideCameraLeft_go_cue_001.mp4
-  behavior_751004_2024-12-21_13-28-28_SideCameraLeft_go_cue_001.json
-  behavior_751004_2024-12-21_13-28-28_SideCameraLeft_go_cue_002.mp4
-  behavior_751004_2024-12-21_13-28-28_SideCameraLeft_go_cue_002.json
+  behavior_751004_2024-12-21_13-28-28_SideCameraLeft_f0174266.mp4
+  behavior_751004_2024-12-21_13-28-28_SideCameraLeft_f0174266.json
+labeled-data/
+  behavior_751004_2024-12-21_13-28-28_SideCameraLeft_f0174266/
+    img00014.png  img00130.png  ...
 ```
 
-A single clip costs the same as a hundred — there is no run-level table that must exist, be found
-or be kept in sync — and provenance travels with a clip that gets copied elsewhere. A directory of
-them globs into a DataFrame in one line (`clip_table`) when batch work wants the table view.
+Naming by frame rather than by a counter (`_001`) means re-running with different event
+parameters never renumbers or overwrites an unrelated clip, and an event picked by two strategies
+produces one clip.
 
-Base keys, written by every clip (see "Two layers" below):
+Sidecar (one per clip):
 
 ```json
 {
-  "clip_path": "video_349.033s_to_351.033s.mp4",
-  "source_video": "/root/capsule/data/.../SideCameraLeft/video.mp4",
-  "start_video_time": 349.033,
-  "duration": 2.0,
-  "start_source_index": 174516,
+  "source_video": ".../SideCameraLeft/video.mp4",
+  "source_csv": ".../SideCameraLeft/metadata.csv",
+  "start_source_index": 174266,
   "n_frames": 1000,
-  "index_method": "fps",
-  "frames_verified": true
+  "frames_verified": true,
+  "constant_frame_rate": true,
+  "event_behavior_time": 3805.642,
+  "requested_duration": 2.0,
+  "session_name": "behavior_751004_2024-12-21_13-28-28",
+  "camera_name": "SideCameraLeft",
+  "strategy": "go_cue",
+  "aind_video_utils_version": "0.7.0"
 }
 ```
 
-Clips cut through the foraging layer add `source_csv`, `event_behavior_time`, `session_name` and
-`camera_name`, and carry `"index_method": "csv"`.
+Rules that keep sidecars from going stale:
 
-### No cv2, no aind-video-utils; sklearn kept for k-means
+- **Written last**, to a temp file and then renamed, only after ffmpeg succeeds. A crashed cut
+  leaves no sidecar, so it's retried next run.
+- **Resume**: a clip is skipped only if its sidecar exists *and* has the same `source_video` and
+  `n_frames`. Otherwise it's re-cut.
+- **No `clip_path` key.** The sidecar is found by stem, so a key pointing at itself would only go
+  stale on rename.
+- Concurrent runs writing to the same `clips/` folder are not supported.
 
-`aind-video-utils` declares `requires-python = ">=3.10"` against this library's `>=3.9`, and the
-bulk-decode path needed here has no API there anyway (`extract_frame_by_index` is one ffmpeg
-subprocess *per frame* — fine for ~20 selected frames, unusable for a 2000-frame feature pass).
-Skipped for v1.
+### Frame selection
 
-Its `mp4_index` achieves frame accuracy by parsing the MP4 `moov` box's sample tables (`stts`
-durations, `ctts` composition offsets, `stss` keyframes, `elst` edits) into a per-frame PTS array,
-then seeking by a frame's *true* PTS rather than an assumed frame rate — reading only box headers
-and the moov, never `mdat`, so it costs a few KB even on a 3 GB file. ffprobe cannot substitute
-cheaply: `-show_frames` yields timestamps only by demuxing the whole file (~5M frames here), and
-`-read_intervals` returns a timestamp rather than an index, since an index is a count from the
-start.
+Frames are named by **clip-local** index (`img00042.png` = clip frame 42), matching DLC's
+convention of sparse frame numbers within one video folder.
 
-**Not used in v1** — see the deferred upgrade below. The analysis capsule is pinned to Python 3.9
-(`codeocean/jupyterlab:3.6.1-miniconda4.12.0-python3.9-ubuntu20.04`) and imports this library, so
-`requires-python` stays `>=3.9` and there is no guarded import or second code path to test. v1
-takes the simplest thing that works: `index_method` of `"csv"` or `"fps"`, and `frames_verified`
-from the `len(csv)` vs `nb_frames` count check.
-
-**Deferred upgrade (TODO for this package).** Three sources measure different things:
-
-| Source | Knows |
+| Algorithm | How indices are chosen |
 |---|---|
-| container (`mp4_index`, or `fps` arithmetic) | the *encoded* timeline — which frames are in the file, and when each is shown |
-| acquisition CSV | the *acquired* timeline — when the camera grabbed each frame, on the harp clock |
-| the bridge | encoded frame *i* == acquired frame *i* |
+| `uniform` | `np.linspace` over the clip |
+| `random` | seeded `np.random.default_rng(seed)` |
+| `kmeans` | one ffmpeg decode of the whole clip, downscaled to gray (`scale=W:H,format=gray -f rawvideo`, both dimensions passed explicitly). Then `MiniBatchKMeans(random_state=seed, n_init=3)`. Each cluster is represented by the member **nearest its centroid**, so the choice is deterministic |
 
-Every v1 path depends on that bridge, including the CSV `searchsorted`, and a re-encode is exactly
-what can break it (hence `fail_on_frame_drop` / `normalize_cfr` in aind-video-utils' transcode).
-Once this library can move to >=3.10, adopting `read_mp4_frame_index` buys two things: an exact
-`start_source_index` with no CFR assumption, and a real bridge check comparing per-frame PTS
-against CSV intervals — where the count check passes happily if frames were both dropped and
-duplicated. Record this in `TODO.md`; it is blocked on the capsule image, which is due for a
-rebuild anyway since Python 3.9 reached end-of-life in October 2025.
+Writing the PNGs: **one ffmpeg call per chosen frame**
+(`-vf select=eq(n\,K) -frames:v 1 -fps_mode passthrough imgKKKKK.png`). This counts frames, so it
+needs no timestamps, and decoding from the start of a ~1000-frame clip about 20 times is fast.
+Each file is named directly, so there's no positional renaming step to get wrong.
+(`extract_frame_by_index` would also work, but returns an array and would need an image writer.)
 
-**cv2 is replaced by two ffmpeg passes.** This concerns *frame grabbing only* — the clip itself
-stays an ordinary full-resolution h264 mp4, and nothing about Stage A (cutting) is downsampled.
+This replaces cv2. sklearn is kept for k-means; hand-writing it isn't worth it.
 
-```
-clip_003.mp4 (2 s, full res)
-      |  pass 1: decode ALL frames, downsampled -> choose ~20 indices
-      |  pass 2: re-read THOSE frames at FULL res -> write PNGs
-      v
-labeled-data/clip_003/img00014.png, img00130.png, ...   (~20 PNGs, full res)
-```
+### Dependencies
 
-The PNGs are the end product for hand-labeling — the DLC `labeled-data/` convention, lossless so
-no compression artifacts appear under a click-to-label workflow.
+`pyproject.toml` currently declares `dependencies = []`, although `video_alignment.py` already
+imports pandas. Add `numpy`, `pandas`, `scikit-learn`, `aind-video-utils>=0.7` (core only, no
+extras; its only required dependency is numpy).
 
-- *Pass 1 (decide)* — one sequential decode of the whole clip, downsampled:
-  `ffmpeg -i clip.mp4 -vf scale=W:H,format=gray -f rawvideo -pix_fmt gray -`
-  then `np.frombuffer(...).reshape(-1, h, w)`. Same idiom as `_rawvideo.py` in aind-video-utils.
-  Downsampling is not new — the current code already does it via `kmeans_resize_width=50` and
-  `cv2.resize`; this just moves the resize into the decoder, which is cheaper than decoding full
-  res and shrinking afterwards. Clustering only needs "how different do these frames look":
-  50 px-wide gray is 3.8 MB and 1900 dims for a 2000-frame clip, against ~2.3 GB and 1.1M dims at
-  full res. Pass **both** scale dimensions explicitly, computed from ffprobe, rather than
-  `scale=W:-1` — otherwise the reshape depends on guessing ffmpeg's rounding.
-- *Pass 2 (save)* — one ffmpeg call using the `select` filter with the chosen indices, writing
-  full-resolution PNGs directly. The image2 muxer numbers outputs sequentially (1..N) rather than
-  by source index, so rename to `img{source_index:05d}.png` afterwards; `select` preserves order,
-  so the mapping is positional.
+ffmpeg and ffprobe are system binaries, found on `PATH`.
 
-`uniform` and `random` skip pass 1 entirely — they compute indices arithmetically.
+## Module API
 
-This also fixes a performance bug, though the bug is not inherent to cv2. `kmeans_frame_selection`
-currently calls `cap.set(CAP_PROP_POS_FRAMES, n)` before each `read()`, walking the clip *by
-seeking*. h264 frames are inter-compressed, so each seek makes the decoder return to the previous
-keyframe and decode forward — roughly O(n^2) work instead of O(n) (with a 250-frame GOP, ~250k
-frame-decodes rather than 2k). Severity depends on GOP length and whether the OpenCV build caches
-sequential seeks. Deleting the `cap.set()` line alone would fix it, since `read()` already
-advances sequentially; the ffmpeg move is about dropping the dependency.
+One module, `src/aind_dynamic_foraging_behavior_video_analysis/video_clips.py`, roughly 250 lines.
 
-**sklearn's `MiniBatchKMeans` is kept**, unchanged from the current code — hand-rolling Lloyd's is
-a maintenance liability for no real gain at this scale, and selected frames stay reproducible
-against past runs. Pin `random_state` and pass `n_init` explicitly rather than relying on the
-default, which has changed across sklearn releases.
+**Event selection** (pure, array in, array out, behavior clock):
 
-This means declaring dependencies honestly: the library currently says `dependencies = []` while
-`video_alignment.py` already imports pandas at module scope. Fix that in the same pass —
-`numpy`, `pandas`, `scikit-learn` — and import normally rather than adding lazy-import machinery
-to keep sklearn nominally optional, which would be more code, not less.
+| Function | Returns |
+|---|---|
+| `evenly_spaced(values, n)` | `n` values picked with `np.linspace` over the sorted input (all of them if `n >= len`) |
+| `first_licks_per_trial(go_cue_times, left_licks, right_licks)` | `(first_left, first_right)` |
+| `go_cue_event_times(go_cue_times, n_go_cues, n_session)` | sorted event times |
+| `lick_event_times(go_cue_times, left_licks, right_licks, n_licks, n_first_licks, n_session)` | sorted event times |
 
-### DLC output contract (verified against real data)
+`n_session` adds evenly spaced times between the first and last go cue, for coverage. This is
+deterministic; the old random sampling is dropped.
 
-Checked `/Users/mib/Downloads/labeled-data/`: the contract is `CollectedData.csv` column 0 holding
-a literal relative path `<clip_stem>/imgNNN.png`. Filename width is **not** fixed — DLC's own
-`extract_frames` derives it from the source frame count. What matters, and is already correct in
-the old code: one folder per clip, and indices are *sparse clip-local frame numbers*
-(`img014.png`, `img130.png`), not `000..N`.
+**Cutting:**
 
-Change `:03d` -> `:05d` (the old width silently overflows past 999 frames, which a 2 s clip at
-these rates clears easily). Existing 3-digit folders stay valid in the same `CollectedData.csv`,
-since each path is stored literally.
+| Function | Role |
+|---|---|
+| `cut_clips_at_events(video_path, csv_path, event_behavior_times, duration, out_dir, session_name, camera_name, strategy)` | **The user-facing call.** `duration` is in seconds (the whole clip, centred on each event). Reads the frame index once and checks it's frame-addressing-safe, converts each event and duration to a start index and frame count via the CSV's timestamps, drops events whose clip would run past either end of the CSV or video, cuts and writes sidecars. Returns the clip paths |
+| `cut_clip(video_path, start_source_index, n_frames, out_path, index=None)` | The primitive, for callers who already think in frames. Takes a frame index and count, not times, so there's no clock to mix up. Reads the frame index if `index` isn't passed. Returns the path |
 
-## Module
-
-One new top-level module, sibling to `video_alignment.py` — not inside `kinematics/`. That
-module's docstring states it is "decoupled from the kinematics pipeline so it can be reused on its
-own"; clipping around behavioral events has the same property and is not kinematics-specific.
-
-```
-src/aind_dynamic_foraging_behavior_video_analysis/
-  video_alignment.py        (exists — becomes a dependency)
-  video_clips.py            NEW
-```
-
-~500 lines, unremarkable here (`mp4_index.py` is 710, `encoding.py` is 811). Frame selection lives
-in the same file: with cv2 and sklearn both gone there is no dependency-weight argument for a
-second module.
-
-### Two layers: the primitive needs no CSV
-
-`start_source_index` is an index into the *source video* and is derivable from the video alone.
-The acquisition CSV is only needed for the last hop, source frame -> behavior time. So the plain
-primitive takes a video, a start and a duration — no session, camera or behavior clock — and
-behavior-time provenance is an optional upgrade layered on top. A caller outside this project can
-cut a clip and still trace a frame back into the original video.
+A notebook call looks like:
 
 ```python
-clip = video_clips.cut_clip(video_path, start_video_time=349.033, duration=2.0, out_dir=out)
-video_clips.frame_source_index(clip, 42)    # -> 174558, frame index in the source video
-
-clips = video_clips.cut_clips_at_events(     # foraging layer: adds csv_path + behavior clock
-    video_path, csv_path, event_behavior_times=go_cues, duration=2.0, out_dir=out)
-video_clips.frame_behavior_time(clips[0], 42)   # -> 1546.887, same clock as goCue_start_time
+clips = cut_clips_at_events(
+    video_path, csv_path, go_cue_event_times(go_cues, 20, 10),
+    duration=2.0, out_dir=clips_dir, session_name=..., camera_name=..., strategy="go_cue",
+)
 ```
 
-**Clock discipline.** `cut_clip` takes `video_time` (it has to — with no CSV the file knows no
-other clock); `cut_clips_at_events` takes `behavior_time` and converts internally via
-`video_alignment.behavior_time_to_video_time()`. Both clocks are bare floats in the same plausible
-range, so passing a go cue time to `cut_clip` would silently cut from the wrong place. Parameters
-are therefore named `start_video_time` and `event_behavior_times`, never `start` or `times`, so
-the clock is visible at every call site. Events on the *session* clock convert with the existing
-`compute_video_session_offset` / `session_time_to_video_time` rather than a `clock=` parameter.
+**Frames and lookup:**
 
-**How the index is derived.** The seek is ffmpeg's, unchanged: `-ss` before `-i` (container seek,
-so it stays fast on an 84-minute source) with a re-encode, which makes ffmpeg decode forward from
-the preceding keyframe and discard frames until the first whose PTS is at or after t. (*PTS*,
-presentation timestamp, is the per-frame "when should this be displayed" value stored in the
-container. A file carries it rather than deriving `frame / fps` because frame rate is not always
-constant, and because h264 B-frames are stored out of display order.) What ffmpeg does *not*
-report is which source frame number it landed on, and that number is what makes a labeled frame
-traceable. `index_method` records how it was computed:
+| Function | Role |
+|---|---|
+| `select_frames(clip_path, num_frames, out_dir, algorithm="uniform", resize_width=50, seed=0)` | Writes `out_dir/img#####.png`, returns the clip-local indices |
+| `read_clip_info(clip_path)` | Loads the sidecar |
+| `labeled_frames_table(labeled_data_dir, clips_dir)` | Reads `CollectedData*.csv`, joins each image path to its sidecar, returns a DataFrame with `source_frame` and `behavior_time` per labeled image |
 
-- `"fps"` — `ceil(start_video_time * fps)`. ffmpeg lands on the first frame at or after t, and for
-  CFR frame *n* has PTS *n/fps*. Exact for a true CFR file, but an assumption.
-- `"csv"` — `np.searchsorted(csv_times, target, side="left")` on the acquisition table. No fps
-  assumption, so it survives jitter and non-uniform timelines. (aind-video-utils'
-  `extract_frame_by_index` refuses to assume a frame rate for this reason, citing a "seam-glitch
-  timeline" on these sources.)
+`labeled_frames_table` is what makes hand labels joinable to trials, licks and kinematics.
 
-They agree on a clean CFR file and diverge otherwise, so recording which was used tells a consumer
-whether the index rests on an assumption. Note the deeper caveat: CSV row *i* is the *i*-th
-**acquired** frame while the index needed is the *i*-th **encoded** frame — equal only if every
-acquired frame reached the file, which is exactly what `frames_verified` (`len(csv)` vs
-`nb_frames`) tests. When that fails neither method is trustworthy and the sidecar says so.
+Private helpers:
 
-The index is also *checkable*: decode clip frame 0 and source frame `start_source_index` and
-compare pixels. A few hundred ms, offered as an opt-in `verify=True` on `cut_clip`, and the same
-check as the round-trip test under Verification.
-
-| Function | Layer | Role |
-|---|---|---|
-| `cut_clip(video_path, start_video_time, duration, out_dir, stem=None)` | plain | **the primitive** — one clip + sidecar, returns `Path` |
-| `frame_source_index(clip_path, frame_index)` | plain | clip frame -> source frame |
-| `read_clip_info(clip_path)` | plain | load the sidecar dict |
-| `clip_table(clip_dir)` | plain | glob sidecars -> `DataFrame` |
-| `select_event_times(strategy, **kw)` | foraging | registry dispatch -> sorted `np.ndarray` of behavior times |
-| `cut_clips_at_events(video_path, csv_path, event_behavior_times, ...)` | foraging | loops `cut_clip`, adds behavior-clock keys |
-| `frame_behavior_time(clip_path, frame_index)` | foraging | the full provenance lookup |
-| `select_frames(clip_path, num_frames, out_dir, algorithm=, resize_width=)` | either | `uniform`/`kmeans`/`random` -> `labeled-data/<stem>/img#####.png` |
-| `labeled_frames_table(labeled_data_dir)` | either | join `CollectedData.csv` paths -> times via sidecars |
-
-`select_frames` reads the sidecar itself, so it behaves identically however the clip was cut.
-
-`labeled_frames_table` is the payoff and is ~15 lines: it is what makes hand-labeled keypoints
-joinable to trials, licks and kinematics.
+- `_event_frame_range(csv_times, event_behavior_time, duration)`: `(start_source_index, n_frames)`
+  from the CSV. Pure, so it's tested directly.
+- The ffmpeg command builders (cut, gray decode, PNG), kept separate from `subprocess.run` so they
+  can be tested without ffmpeg. Width and height for the gray decode come from
+  `aind_video_utils.probe` / `get_frame_dimensions`.
 
 ## Phases
 
-**1. Event selection.** Port `get_first_licks_per_trial`, `select_evenly_spaced_events`,
-`get_evenly_spaced_times`, `_compute_clip_timestamps_go_cue` as pure array-in/array-out functions
-(no NWB — see "Out of scope"). Register strategies in a dict so dispatch is extensible.
+0. **Python upgrade** (see "Prerequisite" above).
+1. **Dependencies and event selection.** Update `pyproject.toml`. Port the event functions as pure
+   functions and write the missing lick strategy.
+2. **Cutting and sidecars.** `_event_frame_range`, `cut_clip`, `cut_clips_at_events`, sidecar
+   write and resume. The CSV is read with `video_alignment.read_video_csv`, which fixes the
+   column-name bug.
+3. **Frame selection.** `select_frames` with the three algorithms.
+4. **Lookup, example and TODO.** `read_clip_info`, `labeled_frames_table`, an example notebook
+   modelled on `examples/video_alignment_example.ipynb`, and a `TODO.md` entry for the deferred
+   check below.
 
-Beyond a straight port:
-- **Write the missing lick strategy**: N evenly-spaced licks from each of the left/right streams,
-  plus M evenly-spaced first-lick-per-trial events from each side, plus K session-coverage times.
-- **Unify the two sampling idioms** — `select_evenly_spaced_events` uses `int(len*i/(n+1))`
-  (never hits endpoints, duplicates when `n >= len`); `_compute_clip_timestamps_go_cue` uses
-  `np.linspace`. Standardize on linspace.
-- **Deterministic session coverage** — replace `rng.uniform` with evenly-spaced by default
-  (reproducible training sets), keeping `rng_seed` opt-in.
+## Out of scope
 
-**2. Cutting + provenance.** Split a pure `build_clip_command()` from a thin subprocess runner; the
-pure half is what gets unit-tested (see Verification). Reuse
-`video_alignment.get_first_frame_behavior_time()` and `behavior_time_to_video_time()` instead of
-the hand-rolled `t_zero` — this is the bug fix from Context item 2.
-
-Also add **bounds clamping** (`t - clip_length/2` currently goes negative for early events and past
-EOF for late ones, and ffmpeg emits a short clip in silence) and **overlap merging** via a
-`min_separation` parameter (two events 0.5 s apart with `clip_length=2` currently produce
-near-duplicate clips, wasting labeling effort and skewing the training set).
-
-Clip stem: `{session}_{camera}_{strategy}_{NNN}` — all times live in the sidecar, not the name.
-Re-encode settings: `-crf 15 -preset fast` with explicit color-metadata passthrough
-(near-visually-lossless; these clips exist only to source frames for labeling).
-
-**3. Frame selection.** `uniform` / `random` / `kmeans` over the two-ffmpeg-pass design above, plus
-the numpy k-means. Output layout unchanged except the `:05d` width. Add `labeled_frames_table`.
-
-**4. Wire up and shim.** `kinematics/video_clip_utils.py` becomes a deprecation shim delegating to
-the new API. Known callers: `kinematics/tongue_analysis.py` (this repo), `lickometer_qc.py` and
-several notebooks in `kinematics_analysis`, `reencoding_utils.py`, and
-`examples/video_alignment_example.ipynb`.
-
-Reuse the asset discovery already in `kinematics/tongue_kinematics_utils.py`:
-`find_behavior_videos_folder`, `find_video_path`, `find_video_csv_path`,
-`get_session_name_from_path`. Note the old `process_behavior_video` resolved `session_name` from
-`input_folder` and then rebuilt `/root/capsule/data/<session_name>`, ignoring the input path — the
-new code takes resolved paths, which is also what makes it testable off Code Ocean.
-
-**5. Tests, example, docs.** See Verification. Example notebook mirroring
-`examples/video_alignment_example.ipynb`. Add the deferred `mp4_index` upgrade to `TODO.md`,
-noting it is blocked on this library moving to Python >=3.10, which is in turn blocked on the
-capsule image.
-
-## Out of scope / dropped
-
-- **NWB coupling stays capsule-side.** The library takes plain arrays (`go_cue_times`,
-  `left_licks`, `right_licks`); a thin capsule-side adapter pulls them out of NWB.
-- **Dropped as re-encoding-era, now handled elsewhere**: `run_aind_behavior_video_transformation`,
+- **`kinematics/video_clip_utils.py` stays as it is.** `tongue_analysis.py` uses its
+  `extract_trial_clip` (10 s trial clips, a different job), and moviepy overlays live there too.
+  Callers move to the new module when convenient; no deprecation shim.
+- **NWB loading and path discovery stay in the capsule.** The library takes resolved paths and
+  plain arrays. The capsule can reuse `find_video_path` / `find_video_csv_path` from
+  `tongue_kinematics_utils.py`.
+- **Re-encoding-era helpers are dropped:** `run_aind_behavior_video_transformation`,
   `copy_nonvideo_and_metadata_files`, `copy_if_exists`, `is_video_file`, `find_top_level_folders`.
-- **Dropped as redundant**: `process_behavior_video_dry_run` (planning is now separable from
-  cutting, so a dry run is free) and `extract_frames_only_from_existing_clips` (resume falls out
-  of "sidecar exists -> skip").
-- **moviepy keypoint overlays** (`create_labeled_video`, `make_cmap`, `process_and_label_clips`)
-  stay in `video_clip_utils.py` for now — separate concern, heaviest dependency, and `clip.fl` is
-  moviepy v1 API that no longer exists in v2. Worth its own pass later.
+- **Also dropped:** `process_behavior_video_dry_run` (compute event times without cutting instead)
+  and `extract_frames_only_from_existing_clips` (loop `select_frames` over existing clips).
+- **Merging overlapping clips** (`min_separation`) is deferred. Stable clip names already remove
+  exact duplicates.
+- **Deferred TODO: a per-frame check.** Compare the frame index's `pts` intervals against the CSV's
+  frame intervals to catch a dropped-plus-duplicated pair that a count can't. The data is already
+  in hand once `aind-video-utils` is a dependency. It is deferred because it only helps if the
+  recording software stamps frames with real acquisition times. If it stamps `i / fps` regardless
+  (likely for Bonsai writing through an ffmpeg pipe), the container intervals are constant and
+  carry no information. Check which it is on real data first (Verification step 4).
 
 ## Constraints
 
-`pyproject.toml` enforces `coverage fail_under = 100` and `interrogate fail-under = 100`, so tests
-and docstrings are mandatory, not cleanup. Target py39 (no `X | Y` annotations), black line length
-79, isort, NumPy docstrings. `video_clip_utils.py` imports cv2, moviepy, matplotlib and seaborn at
-module scope against an empty `dependencies` list — `video_clips.py` must not repeat that. Its
-imports are stdlib, numpy, pandas, sklearn and `video_alignment`, and `pyproject.toml` gains
-`numpy`, `pandas`, `scikit-learn` to match reality. `requires-python` stays `>=3.9` so the capsule
-can still install the library.
+- Python 3.11+ after Phase 0.
+- black and isort at line length 79, flake8, NumPy-style docstrings.
+- `interrogate` and `coverage` both at `fail-under = 100`. There is no CI workflow in the repo, so
+  these are enforced locally.
 
 ## Verification
 
-1. **Unit tests, no ffmpeg needed** — `build_clip_command()` is pure, so cut-mode flags, clamping
-   and `min_separation` merging are tested directly. Event strategies are pure array-in/array-out.
-   Frame-index selection is tested by feeding synthetic feature arrays straight to the clustering
-   step, bypassing decode. This is what satisfies the 100% coverage gate without a real video.
-2. **Round-trip provenance test** (the one that matters) — synthesize a short video with
-   `ffmpeg -f lavfi -i testsrc` plus a matching fake acquisition CSV, cut a clip at a known event
-   time, then assert `frame_behavior_time(clip, k)` equals the CSV's time for source frame
-   `start_source_index + k`, for several `k`. Mark it to skip cleanly where ffmpeg is absent.
-3. **Both CSV layouts** — assert identical results for a headerless 5-column `bottom_camera.csv`
-   and a headered `metadata.csv` with `ReferenceTime`, which is the Context item 2 regression.
-4. **Guard test** — a CSV whose row count disagrees with `nb_frames` must yield
-   `frames_verified: false`.
-5. **End-to-end on one real session** — run against a session from `clip_and_extract.py`'s list,
-   confirm `labeled-data/<stem>/img#####.png` appears with sparse indices, then check
-   `labeled_frames_table` returns behavior times landing within `clip_length/2` of the requested
-   go cues.
-6. Lint and coverage: black, isort, flake8, interrogate, coverage.
+1. **Unit tests, no ffmpeg.** Event functions; `_event_frame_range` (window edges, a CSV with a
+   gap giving a shorter clip); ffmpeg command builders (seek value from `presentation_seconds`
+   formatted to 9 decimals, `-accurate_seek`, `-frames:v`, flags); `cut_clips_at_events` raising
+   on an index that isn't frame-addressing-safe and skipping an event whose
+   `presentation_seconds` raises (both with a stub `Mp4FrameIndex`); bounds dropping; sidecar
+   resume rules; k-means index choice on synthetic feature arrays; `labeled_frames_table` on a
+   fake `CollectedData.csv` plus sidecars. The subprocess wrappers are covered by mocking
+   `subprocess.run`, and `read_mp4_frame_index` by a stub. This is what reaches 100% coverage.
+2. **Round trip with ffmpeg** (skipped if ffmpeg isn't installed). Synthesize a video whose frame
+   `N` has brightness `(N mod 64) * 4`, plus a matching fake CSV. Cut at several events, including
+   times computed as `(t0 + k/fps) - t0`, and assert clip frame `k` has source frame `start + k`'s
+   brightness for every `k`, and `n_frames` is exact. Run it on three variants:
+   - constant 500 fps, B-frames on;
+   - **variable frame rate** (timestamp jumps written with `setpts` and `-fps_mode vfr`), where any
+     `i / fps` seek lands on the wrong frame. This is what proves no nominal rate sneaks back in;
+   - a file with an unsafe edit list (e.g. written with `-output_ts_offset`, which adds an empty
+     edit): `cut_clips_at_events` must raise, not cut.
+3. **Both CSV layouts** give identical sidecars (headerless `bottom_camera.csv` and headered
+   `metadata.csv` with `ReferenceTime`).
+4. **One real session, once.** Check `is_frame_addressing_safe()` on the real file. Cut a clip,
+   then decode source frame `start_source_index` directly (`select=eq(n\,idx)` on the source,
+   which counts frames and needs no timestamps) and compare it to clip frame 0 pixel by pixel.
+   Also record whether the file is constant-rate and whether its `pts` intervals track the CSV's
+   (this decides whether the deferred per-frame check is worth building), and confirm
+   `labeled_frames_table` behavior times land within `duration / 2` of the requested events.
+   Ideally repeat on a session known to have concatenation seams.
+5. **Guard test.** A CSV one row short gives `frames_verified: false`.
+6. black, isort, flake8, interrogate, coverage.
+
+## Changes from revision 3
+
+- **Seeking uses `aind-video-utils`** (`read_mp4_frame_index`, `presentation_seconds`,
+  `is_frame_addressing_safe`) instead of a hand-rolled ffprobe packet table and midpoint seek. The
+  library handles edit lists properly and refuses files where frame addressing isn't safe.
+  `_probe`, `_frame_pts` and `_seek_time` are removed.
+- **Phase 0, a Python upgrade to 3.11+,** is added as a prerequisite, because `aind-video-utils`
+  requires 3.10+, and consumers install this library from `main` unpinned.
+- `cut_clips_at_events` raises on an unsafe file; an event at a non-monotonic timestamp is skipped
+  with a warning.
+- Sidecar adds `aind_video_utils_version`.
+- The deferred per-frame check no longer needs any new code to get the data.
+
+## Changes from revision 2
+
+- No nominal frame rate anywhere: the seek uses the container's per-frame timestamps instead of
+  `(i - 0.5) / fps`.
+- `duration` (seconds) stays the user-facing input. It is converted to a start index and frame
+  count through the CSV's timestamps, not `duration * fps`. `cut_clip` still takes frames.
+- `frames_verified` compares against the container's frame count instead of `nb_frames`.
+- Sidecar: `fps` removed; `constant_frame_rate` and `requested_duration` added.
+- Verification adds a variable-frame-rate round trip.
+
+## Changes from revision 1
+
+- The start index is chosen before cutting (from the CSV) and the seek is aimed at it. This
+  replaces the `"fps"` method, which had a float off-by-one, and the `"csv"` method, which compared
+  harp time against container time. `index_method` is removed.
+- `cut_clip` takes a frame index and a frame count instead of a video time and a duration.
+- PNGs are named by clip-local index (revision 1 said both clip-local and source index in
+  different places).
+- One ffmpeg call per saved frame instead of a `select` pass plus positional renaming.
+- k-means picks the member nearest each centroid (the old code picked one at random, unseeded).
+- Clip stems encode the start frame; sidecars are written last, atomically, with a resume check,
+  and have no `clip_path` key.
+- Out-of-range events are dropped rather than clamped. `min_separation`, the strategy registry,
+  `verify=True`, `clip_table`, `frame_source_index`, `frame_behavior_time` and the
+  `video_clip_utils` shim are removed.
+- Session-coverage times are deterministic only; `rng_seed` is removed.
+- Coverage comes from mocked subprocess tests, not skipped integration tests.
