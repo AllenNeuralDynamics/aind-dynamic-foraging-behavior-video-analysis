@@ -46,7 +46,7 @@ The library's own imports also matter: `aind_dynamic_foraging_basic_analysis` an
 | Date | Stage | Where | Notes |
 |---|---|---|---|
 | 2026-09-24 | Stage 1 done, in review | PR #5 (`build/python-311-support`) | CI passes on 3.9, 3.11 and 3.12 |
-| 2026-09-24 | Stage 2a started | `kinematics_analysis` | Unpushed `kinematics-manuscript` commits backed up |
+| 2026-09-24 | Stage 2a in progress | `kinematics_analysis` | Branches pushed, capsule committed, 3.9 baseline recorded on `wild` @ `7daae78`. Scratch being saved as a data asset |
 
 ### Stage 0: inventory (read-only)
 - [ ] List every Code Ocean capsule and pipeline that installs this library, including the batch
@@ -94,16 +94,22 @@ unsaved `/results`).
 - [x] Every local `kinematics_analysis` branch is on GitHub. *2026-09-24: `kinematics-manuscript`
       had 2 local-only commits (`e185087`, `c073d5d`); both are now pushed. No other branch has
       unpushed commits.*
-- [ ] In Code Ocean, commit and push anything uncommitted in the `kinematics_analysis` capsule
-      and any open workstation. Confirm on GitHub that each branch's tip matches.
+- [x] In Code Ocean, commit and push anything uncommitted in the `kinematics_analysis` capsule
+      and any open workstation. *2026-09-24: done (user).*
 - [ ] Save anything valuable in `/results` or workstation scratch as a Code Ocean **data
       asset** (data assets can't be modified, and a Dockerfile change can't touch them).
-- [ ] Record the 3.9 baseline in the **original** capsule:
-      `pip freeze > environment/py39-freeze.txt`, committed. This makes a rollback exact.
+- [x] Record the 3.9 baseline in the **original** capsule, committed. *2026-09-24: `wild` @
+      `7daae78`: `environment/py39-freeze.txt` (227 lines), `py39-conda.txt` (`conda list
+      --export`, 250 lines; needed because `@ file:///tmp/build/…` lines are conda-installed and
+      can't be reinstalled by pip), `py39-python-version.txt` (3.9.12). The baseline already has
+      numpy 2.0.2 working with spikeinterface 0.100.0 and numba 0.60.0, and this library at
+      `de27558`.*
+      Later, compare environments with `diff <(sort environment/py39-freeze.txt) <(pip freeze | sort)`.
 - [ ] Record reference outputs: run `run_batch_analysis.py` on 1–2 reference sessions on 3.9 and
       save `tongue_kins.parquet`, `tongue_movs.parquet`, and `tongue_quality_stats.json` as a data
       asset. This is the comparison target for the new environment.
-- [ ] Create branch `env/py312` from `main` in `kinematics_analysis`.
+- [ ] Create branch `env/py312` from **`wild`** in `kinematics_analysis`. `wild` is the
+      working branch (206 commits ahead of `main` on 2026-09-24) and holds the baseline files.
 - [ ] Duplicate the capsule in Code Ocean and point the duplicate at `env/py312`. Check that its
       git remote is the same GitHub repo and that its data assets are attached. **All Dockerfile
       work happens in the duplicate. The original capsule stays on 3.9 until 2c.**
@@ -135,7 +141,8 @@ environment recorded in `py39-freeze.txt`.
         `pynwb==3.0.0`, `hdmf-zarr==0.11.0`, `zarr==2.18.2`, and `scikit-image==0.24.0`. Bump
         the minimum needed and record why next to each bump. Highest risk: `wavpack-numcodecs`,
         `moviepy`, and `aind-ephys-utils` (may have no 3.12 build), and `spikeinterface`
-        0.100 (predates numpy 2; add a `numpy<2` pin if imports break).
+        0.100 (predates numpy 2, but the 3.9 baseline already runs it on numpy 2.0.2, so the risk
+        is lower than first thought).
         Iterate by switching the base image first, then fixing failing pins, then fixing failing
         imports.
         Fallback if 3.12 is painful: install 3.11 into the same template image with
@@ -152,8 +159,9 @@ environment recorded in `py39-freeze.txt`.
         against the 3.9 outputs. Numeric drift from newer numpy/scipy should be within
         tolerance, and the schemas should be identical.
 #### 2c. Adopt it
-- [ ] Merge `env/py312` into `main`, rebuild the original capsule once, and archive the
-      duplicate.
+- [ ] Merge `env/py312` into `wild` (the capsule's working branch), rebuild the original
+      capsule once, and archive the duplicate. Then carry it to `main` and the other active
+      branches (below).
 - [ ] **Every active `kinematics_analysis` branch, not just `main`.** As of 2026-09-24, `main`,
       `kinematics-manuscript`, `local-dev` and `wild` each have their own Dockerfile on the py3.9
       image, installing this library from `@main`. For each branch, either merge `main` in after
