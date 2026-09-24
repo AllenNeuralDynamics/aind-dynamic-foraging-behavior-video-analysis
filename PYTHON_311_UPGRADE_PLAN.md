@@ -112,12 +112,21 @@ The library's own imports also matter: `aind_dynamic_foraging_basic_analysis` an
         outputs (`tongue_kins.parquet`, `tongue_movs.parquet`, `tongue_quality_stats.json`)
         against the 3.9 outputs. Numeric drift from newer numpy/scipy should be within
         tolerance, and the schemas should be identical.
+- [ ] **Every active `kinematics_analysis` branch, not just `main`.** As of 2026-09-24, `main`,
+      `kinematics-manuscript`, `local-dev` and `wild` each have their own Dockerfile on the py3.9
+      image, installing this library from `@main`. For each branch, either merge `main` in after
+      the Dockerfile migration, or pin the library to the last-3.9 tag in that branch's
+      Dockerfile (suits branches frozen for a manuscript).
+- [ ] Branches of *this* library (e.g. `LC_manuscript`) need nothing. They keep their own
+      `requires-python` until they merge `main`, and 3.9 code runs fine on 3.11+.
 - [ ] Move each unknown capsule from Stage 0 to 3.11 or newer (the AIND template is a good
       default), or pin it to a SHA/tag.
 - [ ] Optional hygiene: move the `@main` installs in consumers to a tag. This is what makes
       future floor bumps safe by default.
 
 ### Stage 3: raise the floor (separate PR, only after Stage 2 is done)
+- [ ] **Gate:** confirm every consumer *and every active branch of each consumer* is on 3.11+
+      or pinned to a tag or SHA. Otherwise, rebuilding a stale branch breaks.
 - [ ] Tag the last 3.9-compatible commit (for example `v0.1.0` / `py39-final`, since only
       `v0.0.0` exists). Record it in the README so 3.9 holdouts can pin
       `@<tag>`.
