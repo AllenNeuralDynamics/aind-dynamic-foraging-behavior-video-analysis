@@ -1,10 +1,16 @@
-# Plan: move `aind-dynamic-foraging-behavior-video-analysis` to Python 3.11
+# Plan: move `aind-dynamic-foraging-behavior-video-analysis` to Python 3.11+
 
 ## Context
 
 The library declares `requires-python = ">=3.9"` and `black target_version = ['py39']`, while the
 README badge says `>=3.10` (they disagree). 3.9 is end of life. The goal is to end on
 `requires-python = ">=3.11"` **without breaking any consumer at any step**.
+
+- **Library minimum: 3.11.** The motion-energy and BEAST capsules run 3.11, so a higher minimum
+  would lock them out.
+- **`kinematics_analysis` runtime: 3.12**, using AIND's capsule template image
+  (`codeocean/mambaforge3:24.5.0-0-python3.12.4-ubuntu22.04`) with its Python as-is.
+- **CI covers 3.11 and 3.12**, so the library works on every consumer's Python.
 
 The hazard is that the README promises "consuming capsules install it from `main` with no version
 pin". The moment `main` says `>=3.11`, any consumer still on 3.9 fails its next image build with
@@ -27,8 +33,9 @@ The library's own imports also matter: `aind_dynamic_foraging_basic_analysis` an
 
 ## Strategy: three stages, each shippable on its own
 
-1. **Stage 1, widen:** prove the library works on 3.11 while still allowing 3.9.
-2. **Stage 2, migrate consumers** onto 3.11.
+1. **Stage 1, widen:** prove the library works on 3.11 and 3.12 while still allowing 3.9.
+2. **Stage 2, migrate consumers:** `kinematics_analysis` moves to 3.12, and other capsules to 3.11
+   or newer.
 3. **Stage 3, raise the floor** to `>=3.11`, with a tagged last-3.9 release as the escape hatch.
 
 ---
@@ -41,57 +48,72 @@ The library's own imports also matter: `aind_dynamic_foraging_basic_analysis` an
       `VIDEO_CLIPS_MIGRATION_PLAN.md`. For each, record its Python version and whether it pins a SHA or tracks `@main`.
 - [ ] Check `requires-python` on `main` for `aind-dynamic-foraging-basic-analysis` and
       `aind-dynamic-foraging-data-utils`. They are imported by `kinematics/tongue_analysis.py` and
-      `kinematics/kinematics_nwb_utils.py`, so they must install on 3.11 too.
+      `kinematics/kinematics_nwb_utils.py`, so they must install on 3.11 and 3.12 too.
 - [ ] Ask collaborators whether anyone runs this library from a personal or other-team 3.9
       environment that isn't in a repo.
+- [ ] Optional: open a blank capsule and note the other base images AIND's CO offers, in case a
+      better fit than the template exists.
 
-### Stage 1: this repo, 3.11-ready but still `>=3.9` (one PR)
-- [ ] Create a local 3.11 env (`pyenv install 3.11`; only 3.9.21 is installed now) and run
-      `coverage run -m unittest discover` plus `flake8`. Fix anything that breaks.
+### Stage 1: this repo, 3.11/3.12-ready but still `>=3.9` (one PR)
+- [ ] Create local 3.11 and 3.12 envs (`pyenv install 3.11 3.12`; only 3.9.21 is installed now)
+      and run `coverage run -m unittest discover` plus `flake8` in each. Fix anything that breaks.
 - [ ] Add CI. `.github/workflows/` does not exist, although the README refers to
-      `test_and_lint.yml`. Add a `test_and_lint.yml` that runs a matrix over **3.9 and 3.11** with
-      unittest + flake8 + interrogate.
+      `test_and_lint.yml`. Add a `test_and_lint.yml` that runs a matrix over **3.9, 3.11 and
+      3.12** with unittest + flake8 + interrogate.
       Note: `fail_under = 100` coverage will probably fail. Decide whether to lower it or leave
       coverage out of the CI gate for now.
 - [ ] Declare runtime `dependencies` in `pyproject.toml`: pandas, numpy, scipy, matplotlib,
       seaborn, pynwb, opencv-python, moviepy, python-dateutil, and requests (the last is used only
       lazily in `TransferToNWB.py`). The heavy or sibling ones could go in extras (for example
       `[nwb]` and `[video]`). This keeps `video_alignment` "pandas-only" for consumers like BEAST.
-      Without declared deps, a 3.11 resolve can pull numpy 2 / pandas 3 unchecked.
-- [ ] Check behavior with the newer stack a 3.11 resolve will pick (numpy 2.x, pandas 2.x/3.x):
-      look for removed aliases (`np.NaN`, `np.float`), `fillna(method=)`, `DataFrame.append`, and
-      `applymap`. A first grep found none, but run the tests to confirm.
+      Without declared deps, a 3.11/3.12 resolve can pull numpy 2 / pandas 3 unchecked.
+- [ ] Check behavior with the newer stack a 3.11/3.12 resolve will pick (numpy 2.x, pandas
+      2.x/3.x): look for removed aliases (`np.NaN`, `np.float`), `fillna(method=)`,
+      `DataFrame.append`, and `applymap`. A first grep found none, but run the tests to confirm.
 - [ ] Fix the README badge (`>=3.10`) so it matches reality.
 
 ### Stage 2: migrate consumers
-- [ ] **`kinematics_analysis`** (the blocking one), `environment/Dockerfile`:
-  - [ ] Choose the base image. The Dockerfile is already hand-edited (not UI-managed), so edit
-        `FROM` directly in CO or through the capsule's git repo.
-        - **Preferred:** switch `FROM` to a CO JupyterLab starter image that ships Python 3.11.
-          Copy the exact tag from CO's Environment UI starter picker. Unpin or rename the
-          Ubuntu-20.04-specific apt packages (`build-essential`, `libgit2-dev`, `pandoc`,
-          `pkg-config`, `python3-tk`; `libgl1-mesa-glx` → `libgl1` on 24.04).
-        - **Fallback** if there's no 3.11 image: keep the py3.9 image and add
-          `RUN conda install -y python=3.11 && conda clean -ya` after `FROM`. This pattern already
-          works in `aind-motion-energy-capsule`. Re-verify JupyterLab still launches, since BEAST
-          had to reinstall it.
-        - Do this in a duplicated capsule or on a branch, not the live capsule.
-  - [ ] Re-check every pin for 3.11 wheels: `spikeinterface[full]==0.100.0`,
-        `scipy==1.13.0`, `wavpack-numcodecs==0.1.5`, `open-ephys-python-tools==0.1.7`,
-        `pymupdf==1.24.2`, `ipywidgets==7.7.2` (JupyterLab 3.6 compatibility), `moviepy==1.0.3`,
-        `aind-ephys-utils==0.0.15`, `pynwb==3.0.0`, and `hdmf-zarr==0.11.0`.
-  - [ ] Replace the `python3-tk=3.8.10…` apt pin. It is the system Python's Tk, not conda's.
+- [ ] **`kinematics_analysis`** (the blocking one), `environment/Dockerfile`. Work in a
+      duplicated capsule or on a branch, not the live capsule. The Dockerfile is already
+      hand-edited (not UI-managed), so edit it directly in CO or through the capsule's git repo.
+  - [ ] **First, capture a baseline:** `pip freeze > environment/py39-freeze.txt` from the
+        current working 3.9 image. It's the reference for anything that breaks.
+        A scan of its 18 `.py` files and 53 notebooks found no 3.12 or numpy-2 blockers, so the
+        risk is in the environment, not the code.
+  - [ ] Change `FROM` to AIND's template image:
+        `FROM $REGISTRY_HOST/codeocean/mambaforge3:24.5.0-0-python3.12.4-ubuntu22.04`.
+        Use its Python 3.12 as-is, with no conda/mamba Python swap.
+  - [ ] Install JupyterLab explicitly (with `ipywidgets` at a compatible version). The mambaforge
+        image has no IDE, and the hand-edited Dockerfile blocks CO's automatic IDE install. This is
+        the same problem BEAST hit. Confirm the `postInstall` code-server setup still works.
+  - [ ] Update the apt block for Ubuntu 22.04. Drop the 20.04 version pins (`build-essential`,
+        `libgit2-dev`, `pandoc`, `pkg-config`). Remove `python3-tk=3.8.10…`, since that's the
+        system Python's Tk and not mamba's (use `tk` from conda-forge if needed). Keep `ffmpeg` and
+        `libgl1-mesa-glx`.
+  - [ ] Re-check every pin for 3.12 wheels or support: `spikeinterface[full]==0.100.0`,
+        `wavpack-numcodecs==0.1.5`, `moviepy==1.0.3`, `open-ephys-python-tools==0.1.7`,
+        `aind-ephys-utils==0.0.15`, `scipy==1.13.0`, `pymupdf==1.24.2`, `pillow==10.3.0`,
+        `pynwb==3.0.0`, `hdmf-zarr==0.11.0`, `zarr==2.18.2`, and `scikit-image==0.24.0`. Bump
+        the minimum needed and record why next to each bump. Highest risk: `wavpack-numcodecs`,
+        `moviepy`, and `aind-ephys-utils` (may have no 3.12 build), and `spikeinterface`
+        0.100 (predates numpy 2; add a `numpy<2` pin if imports break).
+        Iterate by switching the base image first, then fixing failing pins, then fixing failing
+        imports.
+        Fallback if 3.12 is painful: install 3.11 into the same template image with
+        `mamba install python=3.11`.
   - [ ] Drop the `--ignore-requires-python` workaround for `rachel-analysis-utils`, which needs
         ≥3.10.
   - [ ] Revisit `scanpy==1.10.3`. That pin exists only because of 3.9 (see the comment in the
         Dockerfile).
   - [ ] Update `kinematics_analysis/CLAUDE.md` lines ~20 and ~70 ("Python 3.9 compatible syntax
-        only", `requires-python = ">=3.9"`).
+        only", `requires-python = ">=3.9"`). Note that the library supports 3.11+, so shared code
+        should avoid 3.12-only features.
   - [ ] Rebuild the image and rerun `run_batch_analysis.py` on 1–2 reference sessions. Diff
         outputs (`tongue_kins.parquet`, `tongue_movs.parquet`, `tongue_quality_stats.json`)
         against the 3.9 outputs. Numeric drift from newer numpy/scipy should be within
         tolerance, and the schemas should be identical.
-- [ ] Move each unknown capsule from Stage 0 to 3.11, or pin it to a SHA/tag.
+- [ ] Move each unknown capsule from Stage 0 to 3.11 or newer (the AIND template is a good
+      default), or pin it to a SHA/tag.
 - [ ] Optional hygiene: move the `@main` installs in consumers to a tag. This is what makes
       future floor bumps safe by default.
 
@@ -99,19 +121,20 @@ The library's own imports also matter: `aind_dynamic_foraging_basic_analysis` an
 - [ ] Tag the last 3.9-compatible commit (for example `v0.1.0` / `py39-final`, since only
       `v0.0.0` exists). Record it in the README so 3.9 holdouts can pin
       `@<tag>`.
-- [ ] `pyproject.toml`: `requires-python = ">=3.11"`, `target_version = ['py311']`, and add a
-      `Programming Language :: Python :: 3.11` classifier.
-- [ ] CI matrix: drop 3.9. Optionally add 3.12 so the next upgrade is already covered.
+- [ ] `pyproject.toml`: `requires-python = ">=3.11"`, `target_version = ['py311']`, and add
+      `Programming Language :: Python :: 3.11` / `3.12` classifiers.
+- [ ] CI matrix: drop 3.9 and keep 3.11 + 3.12.
 - [ ] Update `VIDEO_CLIPS_MIGRATION_PLAN.md` ("works on Python 3.9").
 - [ ] Optional follow-up PR (not in the same one): modernize syntax, for example
       `Optional[X]` → `X | None`. Keep it separate so the floor bump stays easy to revert.
 - [ ] Announce to consumers: what changed, the 3.9 tag, and the date.
 
 ## Verification
-- CI green on 3.9 + 3.11 (Stage 1), then on 3.11 only (Stage 3).
-- `pip install git+…@main` succeeds in a fresh 3.11 env and fails cleanly on 3.9 after Stage 3.
-- `kinematics_analysis` image builds on 3.11, and its batch outputs match the 3.9 baseline for
-  reference sessions.
+- CI green on 3.9 + 3.11 + 3.12 (Stage 1), then on 3.11 + 3.12 (Stage 3).
+- `pip install git+…@main` succeeds in fresh 3.11 and 3.12 envs, and fails cleanly on 3.9 after
+  Stage 3.
+- The `kinematics_analysis` image builds on the AIND 3.12 template, JupyterLab launches, and its
+  batch outputs match the 3.9 baseline for reference sessions.
 - Rebuild each unpinned capsule from Stage 0 after Stage 3 merges.
 
 ## Rollback
