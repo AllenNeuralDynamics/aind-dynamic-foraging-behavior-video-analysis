@@ -46,7 +46,7 @@ The library's own imports also matter: `aind_dynamic_foraging_basic_analysis` an
 | Date | Stage | Where | Notes |
 |---|---|---|---|
 | 2026-09-24 | Stage 1 done, in review | PR #5 (`build/python-311-support`) | CI passes on 3.9, 3.11 and 3.12 |
-| 2026-09-24 | Stage 2a in progress | `kinematics_analysis` | Baseline recorded (`wild` @ `7daae78`), reference outputs in asset `env_reference_py39`, `env/py312` created. Next: duplicate the capsule |
+| 2026-09-24 | Stage 2a done; 2b drafted | `kinematics_analysis` `env/py312` @ `2510b5e` | Duplicate capsule on `env/py312`; 3.12 Dockerfile + `py39-constraints.txt` pushed. Next: build it on CO |
 
 ### Stage 0: inventory (read-only)
 - [ ] List every Code Ocean capsule and pipeline that installs this library, including the batch
@@ -116,9 +116,10 @@ unsaved `/results`).
 - [x] Create branch `env/py312` from **`wild`** in `kinematics_analysis`. *2026-09-24: created
       at `6af4d2f` and pushed.* `wild` is the
       working branch (206 commits ahead of `main` on 2026-09-24) and holds the baseline files.
-- [ ] Duplicate the capsule in Code Ocean and point the duplicate at `env/py312`. Check that its
+- [x] Duplicate the capsule in Code Ocean and point the duplicate at `env/py312`. Check that its
       git remote is the same GitHub repo and that its data assets are attached. **All Dockerfile
       work happens in the duplicate. The original capsule stays on 3.9 until 2c.**
+      *2026-09-24: done (user). The duplicate is linked to GitHub, on `env/py312`.*
 - [ ] Note which Code Ocean capsule, if any, runs each other branch (`kinematics-manuscript`,
       `wild`, `local-dev`). Each of those capsules needs the change or a pin before Stage 3.
 
@@ -127,43 +128,42 @@ changed. After 2c, `git revert` the Dockerfile commit and rebuild, which gives t
 environment recorded in `py39-freeze.txt`.
 
 #### 2b. Migrate the environment in the duplicate capsule (`env/py312`)
-- [ ] **`kinematics_analysis`** (the blocking one), `environment/Dockerfile`. The Dockerfile is
-      already hand-edited (not UI-managed), so edit it directly in CO or through git.
-      A scan of its 18 `.py` files and 53 notebooks found no 3.12 or numpy-2 blockers, so the
-      risk is in the environment, not the code.
-  - [ ] Change `FROM` to AIND's template image:
-        `FROM $REGISTRY_HOST/codeocean/mambaforge3:24.5.0-0-python3.12.4-ubuntu22.04`.
-        Use its Python 3.12 as-is, with no conda/mamba Python swap.
-  - [ ] Install JupyterLab explicitly (with `ipywidgets` at a compatible version). The mambaforge
-        image has no IDE, and the hand-edited Dockerfile blocks CO's automatic IDE install. This is
-        the same problem BEAST hit. Confirm the `postInstall` code-server setup still works.
-  - [ ] Update the apt block for Ubuntu 22.04. Drop the 20.04 version pins (`build-essential`,
-        `libgit2-dev`, `pandoc`, `pkg-config`). Remove `python3-tk=3.8.10…`, since that's the
-        system Python's Tk and not mamba's (use `tk` from conda-forge if needed). Keep `ffmpeg` and
-        `libgl1-mesa-glx`.
-  - [ ] Re-check every pin for 3.12 wheels or support: `spikeinterface[full]==0.100.0`,
-        `wavpack-numcodecs==0.1.5`, `moviepy==1.0.3`, `open-ephys-python-tools==0.1.7`,
-        `aind-ephys-utils==0.0.15`, `scipy==1.13.0`, `pymupdf==1.24.2`, `pillow==10.3.0`,
-        `pynwb==3.0.0`, `hdmf-zarr==0.11.0`, `zarr==2.18.2`, and `scikit-image==0.24.0`. Bump
-        the minimum needed and record why next to each bump. Highest risk: `wavpack-numcodecs`,
-        `moviepy`, and `aind-ephys-utils` (may have no 3.12 build), and `spikeinterface`
-        0.100 (predates numpy 2, but the 3.9 baseline already runs it on numpy 2.0.2, so the risk
-        is lower than first thought).
-        Iterate by switching the base image first, then fixing failing pins, then fixing failing
-        imports.
-        Fallback if 3.12 is painful: install 3.11 into the same template image with
-        `mamba install python=3.11`.
-  - [ ] Drop the `--ignore-requires-python` workaround for `rachel-analysis-utils`, which needs
-        ≥3.10.
-  - [ ] Revisit `scanpy==1.10.3`. That pin exists only because of 3.9 (see the comment in the
-        Dockerfile).
-  - [ ] Update `kinematics_analysis/CLAUDE.md` lines ~20 and ~70 ("Python 3.9 compatible syntax
-        only", `requires-python = ">=3.9"`). Note that the library supports 3.11+, so shared code
-        should avoid 3.12-only features.
-  - [ ] Rebuild the image and rerun `run_batch_analysis.py` on 1–2 reference sessions. Diff
-        outputs (`tongue_kins.parquet`, `tongue_movs.parquet`, `tongue_quality_stats.json`)
-        against the 3.9 outputs. Numeric drift from newer numpy/scipy should be within
-        tolerance, and the schemas should be identical.
+Approach (2026-09-24): **change only Python, the OS and the Jupyter tooling.** A new
+`environment/py39-constraints.txt`, generated from `py39-freeze.txt`, holds every package at its
+3.9-baseline version through `pip install -c`. All 187 constrained versions resolved for Linux +
+Python 3.12 (checked with `uv pip compile --python-platform x86_64-manylinux_2_35`),
+including numpy 2.0.2, pandas 2.3.3, scipy 1.13.0, spikeinterface 0.100.0, numcodecs 0.12.1 and
+matplotlib 3.9.4. So any DIFF in the reference comparison is caused by Python 3.12 itself.
+pandas 3 and other upgrades become separate, deliberate steps: edit the constraints file.
+
+- [x] **`kinematics_analysis` `environment/Dockerfile`**, drafted on `env/py312` @ `2510b5e`.
+      A scan of its 18 `.py` files and 53 notebooks found no 3.12 or numpy-2 blockers.
+  - [x] `FROM $REGISTRY_HOST/codeocean/mambaforge3:24.5.0-0-python3.12.4-ubuntu22.04`, using its
+        Python as-is.
+  - [x] Install `jupyterlab` and `ipywidgets` explicitly. They resolve to 4.1.6 and 8.0.7; no code
+        uses ipywidgets directly.
+  - [x] apt block: Ubuntu 20.04 version pins dropped, `python3-tk` removed (conda-forge Python
+        ships Tk), and `git`, `curl`, `ca-certificates` added (the minimal base lacks them; `curl`
+        is needed by `postInstall`).
+  - [x] Pins checked for Linux 3.12: all resolve unchanged. `moviepy==1.0.3` and
+        `open-ephys-python-tools==0.1.7` are source-only but pure Python. **`wavpack-numcodecs`
+        has never shipped wheels (every release is source-only)**, so it compiles on Linux, as it
+        already does on 3.9. It couldn't be test-built here (macOS, no Docker). It's the step most
+        likely to fail. If it does, check the build log for a missing system library.
+  - [x] `--ignore-requires-python` for `rachel-analysis-utils` removed.
+  - [x] `scanpy`: held at 1.10.3 by the constraints file for the migration. It can be bumped
+        later.
+- [ ] **Build the duplicate capsule's environment** on Code Ocean. Check that JupyterLab and
+      the `postInstall` code-server setup launch.
+- [ ] Run `code/env_00_reference_sessions.ipynb` in the duplicate, with the `env_reference_py39`
+      asset attached and `BASELINE_DIR` pointing at its `py39` folder. Review any DIFF rows.
+      Save `scratch/env_reference/py312/` as a data asset.
+- [ ] Spot-check a few analysis notebooks (for example a `kin_` and an `eph_` notebook) in the
+      duplicate.
+- [ ] At adoption (2c), update `kinematics_analysis/CLAUDE.md` lines ~20 and ~70 ("Python 3.9
+      compatible syntax only", `requires-python = ">=3.9"`). Note that the library supports
+      3.11+, so shared code should avoid 3.12-only features.
+
 #### 2c. Adopt it
 - [ ] Merge `env/py312` into `wild` (the capsule's working branch), rebuild the original
       capsule once, and archive the duplicate. Then carry it to `main` and the other active
