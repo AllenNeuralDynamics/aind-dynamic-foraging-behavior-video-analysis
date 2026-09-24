@@ -155,6 +155,8 @@ pandas 3 and other upgrades become separate, deliberate steps: edit the constrai
         later.
 - [ ] **Build the duplicate capsule's environment** on Code Ocean. Check that JupyterLab and
       the `postInstall` code-server setup launch.
+      Fallback if 3.12 turns out to be painful: install 3.11 into the same template image
+      (`RUN mamba install -y python=3.11` after `FROM`). The constraints file stays the same.
 - [ ] Run `code/env_00_reference_sessions.ipynb` in the duplicate, with the `env_reference_py39`
       asset attached and `BASELINE_DIR` pointing at its `py39` folder. Review any DIFF rows.
       Save `scratch/env_reference/py312/` as a data asset.
