@@ -69,7 +69,8 @@ The library's own imports also matter: `aind_dynamic_foraging_basic_analysis` an
       `flake8 --select=E9,F63,F7,F82` (syntax errors and undefined names). Coverage (14%),
       interrogate (74%) and full flake8 (916 issues) are reported, not enforced. They have
       never met the 100% thresholds in `pyproject.toml`.*
-- [x] Declare runtime dependencies. *Core: `numpy`, `pandas` (enough for `video_alignment` and
+- [x] Declare runtime dependencies (`pyarrow` added 2026-09-24: `run_batch_analysis` writes
+      parquet). *Core: `numpy`, `pandas` (enough for `video_alignment` and
       `tongue_lickometer_utils`). Everything else is in the `kinematics` extra: sibling AIND libs,
       scipy, matplotlib, seaborn, opencv-python, moviepy, pynwb, python-dateutil, and requests.*
 - [x] Add `tests/test_imports.py`, which imports every module, since most modules have no tests.
@@ -96,8 +97,9 @@ unsaved `/results`).
       unpushed commits.*
 - [x] In Code Ocean, commit and push anything uncommitted in the `kinematics_analysis` capsule
       and any open workstation. *2026-09-24: done (user).*
-- [ ] Save anything valuable in `/results` or workstation scratch as a Code Ocean **data
+- [x] Save anything valuable in `/results` or workstation scratch as a Code Ocean **data
       asset** (data assets can't be modified, and a Dockerfile change can't touch them).
+      *2026-09-24: scratch saved (user).*
 - [x] Record the 3.9 baseline in the **original** capsule, committed. *2026-09-24: `wild` @
       `7daae78`: `environment/py39-freeze.txt` (227 lines), `py39-conda.txt` (`conda list
       --export`, 250 lines; needed because `@ file:///tmp/build/…` lines are conda-installed and
@@ -105,9 +107,11 @@ unsaved `/results`).
       numpy 2.0.2 working with spikeinterface 0.100.0 and numba 0.60.0, and this library at
       `de27558`.*
       Later, compare environments with `diff <(sort environment/py39-freeze.txt) <(pip freeze | sort)`.
-- [ ] Record reference outputs: run `run_batch_analysis.py` on 1–2 reference sessions on 3.9 and
-      save `tongue_kins.parquet`, `tongue_movs.parquet`, and `tongue_quality_stats.json` as a data
-      asset. This is the comparison target for the new environment.
+- [ ] Record reference outputs: run `code/env_00_reference_sessions.ipynb` (`wild` @ `6af4d2f`)
+      in the original 3.9 capsule with `BASELINE_DIR = None`, then save
+      `scratch/env_reference/py39/` as a data asset. This is the comparison target. In 2b, the
+      same notebook, with `BASELINE_DIR` pointing at that asset, reruns the same sessions and
+      compares every output file.
 - [ ] Create branch `env/py312` from **`wild`** in `kinematics_analysis`. `wild` is the
       working branch (206 commits ahead of `main` on 2026-09-24) and holds the baseline files.
 - [ ] Duplicate the capsule in Code Ocean and point the duplicate at `env/py312`. Check that its

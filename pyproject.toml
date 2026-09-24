@@ -34,6 +34,7 @@ kinematics = [
     'matplotlib',
     'moviepy',
     'opencv-python',
+    'pyarrow',
     'pynwb',
     'python-dateutil',
     'requests',
