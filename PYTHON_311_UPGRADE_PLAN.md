@@ -65,9 +65,13 @@ The library's own imports also matter: `aind_dynamic_foraging_basic_analysis` an
       - *The "batch pipeline" in the README **is** `kinematics_analysis`'s Reproducible Run
         (`code/run` → `run_batch_analysis.py` → `run_batch_analysis`). It's on 3.12 and was
         validated bit-for-bit (Stage 2b).*
-      - *The video re-encoding capsule is the user's own and is handled separately. **It's the one
-        remaining Stage 3 gate:** before the floor bump, it must be on 3.11+ or install this
-        library from a fixed commit or tag.*
+      - *The video re-encoding capsule is the user's own. It runs **Python 3.10.9**
+        (`c1-vscode:4.20.0` base; its other AIND deps are PyPI-pinned) and installs this library
+        from `@main`, so **Stage 3 would break its next build.** Fix: pin that one line to
+        `@d94854f4f8072bd76823855c6b29ec6a452a2c4a` (library `main` after Stage 1), then rebuild.
+        Follow-up: to take any post-Stage-3 library version (notably `video_clips.py` from
+        `VIDEO_CLIPS_MIGRATION_PLAN.md`, which targets this capsule), first move it to 3.11+,
+        e.g. the AIND template as in Stage 2.*
       - *No other capsules use the library.*
 - [x] Ask collaborators whether anyone runs this library from a personal or other-team 3.9
       environment that isn't in a repo. *2026-09-25: none known (user).*
@@ -279,7 +283,8 @@ pandas 3 and other upgrades become separate, deliberate steps: edit the constrai
 
 ### Stage 3: raise the floor (separate PR, only after Stage 2 is done)
 - [ ] **Gate:** confirm every consumer *and every active branch of each consumer* is on 3.11+.
-      *As of 2026-09-25, everything is clear except the video re-encoding capsule (user). Clear:
+      *As of 2026-09-25, everything is clear except the video re-encoding capsule (user): it's on
+      3.10.9, so it needs its library line pinned to `d94854f` and rebuilt. Clear:
       `kinematics_analysis` (`wild`, `main`, `kinematics-manuscript` on 3.12; `archive/main-py39`
       pinned), `aind-motion-energy-capsule` and `aind-BEAST-train-test` (3.11, pinned SHAs).*
      
