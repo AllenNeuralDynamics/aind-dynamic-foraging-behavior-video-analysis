@@ -54,6 +54,7 @@ The library's own imports also matter: `aind_dynamic_foraging_basic_analysis` an
 | 2026-09-25 | 2b: most spot-checks pass | duplicate capsule | All modules import; eph_01, kin_02, fip_01 run; pymongo C ext OK. Pending: eph_09, kin_03, kin_07 |
 | 2026-09-25 | 2b: kernel-hang fix | `env/py312` @ `1024923` | eph_09, kin_03 pass. debugpy 1.6.6 -> 1.8.20, ipykernel 6.29.5. Next: rebuild, rerun kin_07 |
 | 2026-09-25 | **2b done**; 2c prepared | `env/py312` @ `e71b64e` | kin_07 passes, all spot-checks done. Adoption changes committed. Next: merge into `wild`, rebuild original capsule |
+| 2026-09-25 | 2c: merged into `wild` | `kinematics_analysis` `wild` @ `0a3c9ce` | Next: rebuild original capsule, archive duplicate, then other branches |
 
 ### Stage 0: inventory (read-only)
 - [ ] List every Code Ocean capsule and pipeline that installs this library, including the batch
@@ -234,9 +235,11 @@ pandas 3 and other upgrades become separate, deliberate steps: edit the constrai
       instead of raising), data-utils `hdmf_zarr<0.14` cap. models kept at 0.16.0. Resolves on
       Linux 3.12; only those two library commits differ from the tested environment.
       `env/py312` -> `wild` merges cleanly.*
-- [ ] Merge `env/py312` into `wild` (the capsule's working branch), rebuild the original
-      capsule once, and archive the duplicate. Then carry it to `main` and the other active
-      branches (below).
+- [x] Merge `env/py312` into `wild` (the capsule's working branch). *2026-09-25: merge commit
+      `0a3c9ce`. To undo: `git revert -m 1 0a3c9ce` on `wild`, push, rebuild.*
+- [ ] Rebuild the original capsule once (on `wild`). Check it launches and run one notebook.
+- [ ] Archive the duplicate capsule.
+- [ ] Then carry the change to `main` and the other active branches (below).
 - [ ] **Every active `kinematics_analysis` branch, not just `main`.** As of 2026-09-24, `main`,
       `kinematics-manuscript`, `local-dev` and `wild` each have their own Dockerfile on the py3.9
       image, installing this library from `@main`. For each branch, either merge `main` in after
