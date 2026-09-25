@@ -49,6 +49,7 @@ The library's own imports also matter: `aind_dynamic_foraging_basic_analysis` an
 | 2026-09-24 | Stage 2a done; 2b drafted | `kinematics_analysis` `env/py312` @ `2510b5e` | Duplicate capsule on `env/py312`; 3.12 Dockerfile + `py39-constraints.txt` pushed. Next: build it on CO |
 | 2026-09-25 | 2b: build 1 failed (PyYAML 6.0), fixed | `env/py312` @ `d9ffba3` | Wheel-less compiled deps bumped; AIND libs pinned to baseline. Next: rebuild |
 | 2026-09-25 | 2b: build 2 succeeded | duplicate capsule | VS Code launches; reference comparison running |
+| 2026-09-25 | 2b: reference comparison passed | duplicate capsule | 3.12 outputs bit-for-bit identical to 3.9 on 2 sessions. Next: spot-check notebooks, then adopt (2c) |
 
 ### Stage 0: inventory (read-only)
 - [ ] List every Code Ocean capsule and pipeline that installs this library, including the batch
@@ -169,9 +170,13 @@ pandas 3 and other upgrades become separate, deliberate steps: edit the constrai
       the `postInstall` code-server setup launch.
       Fallback if 3.12 turns out to be painful: install 3.11 into the same template image
       (`RUN mamba install -y python=3.11` after `FROM`). The constraints file stays the same.
-- [ ] Run `code/env_00_reference_sessions.ipynb` in the duplicate, with the `env_reference_py39`
+- [x] Run `code/env_00_reference_sessions.ipynb` in the duplicate, with the `env_reference_py39`
       asset attached and `BASELINE_DIR` pointing at its `py39` folder. Review any DIFF rows.
-      Save `scratch/env_reference/py312/` as a data asset.
+      *2026-09-25: **bit-for-bit identical.** 2 sessions (`behavior_716325_2024-05-31_10-31-14`,
+      `behavior_717259_2024-06-28_11-17-19`), 17 parquet files each, plus
+      `tongue_quality_stats.json`: no DIFF, no "close" rows.*
+- [ ] Save `scratch/env_reference/py312/` (including `comparison_vs_baseline.csv`) as a data
+      asset, as the record.
 - [ ] Spot-check a few analysis notebooks (for example a `kin_` and an `eph_` notebook) in the
       duplicate.
 - [ ] At adoption (2c), update `kinematics_analysis/CLAUDE.md` lines ~20 and ~70 ("Python 3.9
