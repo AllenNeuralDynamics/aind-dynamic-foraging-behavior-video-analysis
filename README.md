@@ -5,7 +5,7 @@
 [![semantic-release: angular](https://img.shields.io/badge/semantic--release-angular-e10079?logo=semantic-release)](https://github.com/semantic-release/semantic-release)
 ![Interrogate](https://img.shields.io/badge/interrogate-100.0%25-brightgreen)
 ![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen)
-![Python](https://img.shields.io/badge/python->=3.10-blue?logo=python)
+![Python](https://img.shields.io/badge/python->=3.9-blue?logo=python)
 
 
 
@@ -45,14 +45,24 @@ Module layering is spelled out in each module's docstring
  - The `.github/workflows/test_and_lint.yml` file will run automated tests and style checks every time a Pull Request is opened. If the checks are undesired, the `test_and_lint.yml` can be deleted. The strictness of the code coverage level, etc., can be modified by altering the configurations in the `pyproject.toml` file and the `.flake8` file.
 
 ## Installation
+Supported Python: 3.9, 3.11 and 3.12, each tested in CI. The minimum
+will move to 3.11 once downstream capsules have migrated.
+
 To use the software, in the root directory, run
 ```bash
 pip install -e .
 ```
 
+The core install (numpy, pandas) covers `video_alignment` and
+`kinematics/tongue_lickometer_utils`. For the kinematics, ephys, NWB and
+video-clip modules, install the `kinematics` extra:
+```bash
+pip install -e ".[kinematics]"
+```
+
 To develop the code, run
 ```bash
-pip install -e .[dev]
+pip install -e ".[kinematics,dev]"
 ```
 
 ## Contributing

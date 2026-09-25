@@ -11,15 +11,36 @@ authors = [
     {name = "Allen Institute for Neural Dynamics"}
 ]
 classifiers = [
-    "Programming Language :: Python :: 3"
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12"
 ]
 readme = "README.md"
 dynamic = ["version"]
 
+# Core is what video_alignment and tongue_lickometer_utils need, so
+# consumers that only align timebases stay light. Everything else
+# (kinematics, ephys, NWB, video clips) is in the `kinematics` extra.
 dependencies = [
+    'numpy',
+    'pandas'
 ]
 
 [project.optional-dependencies]
+kinematics = [
+    'aind-dynamic-foraging-basic-analysis',
+    'aind-dynamic-foraging-data-utils',
+    'matplotlib',
+    'moviepy',
+    'opencv-python',
+    'pyarrow',
+    'pynwb',
+    'python-dateutil',
+    'requests',
+    'scipy',
+    'seaborn'
+]
 dev = [
     'black',
     'coverage',
