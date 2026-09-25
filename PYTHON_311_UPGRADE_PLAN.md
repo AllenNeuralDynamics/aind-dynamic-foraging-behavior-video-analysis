@@ -56,6 +56,7 @@ The library's own imports also matter: `aind_dynamic_foraging_basic_analysis` an
 | 2026-09-25 | **2b done**; 2c prepared | `env/py312` @ `e71b64e` | kin_07 passes, all spot-checks done. Adoption changes committed. Next: merge into `wild`, rebuild original capsule |
 | 2026-09-25 | 2c: merged into `wild` | `kinematics_analysis` `wild` @ `0a3c9ce` | Next: rebuild original capsule, archive duplicate, then other branches |
 | 2026-09-25 | **2c: original capsule on Python 3.12** | `wild` @ `6e36ef2` | Rebuilt; eph_01 runs. Next: archive duplicate; migrate or pin `main`, `kinematics-manuscript`, `local-dev` |
+| 2026-09-25 | **2c: branches done** | `kinematics_analysis` | manuscript on 3.12; local-dev retired (`archive/local-dev`); main promoted to wild (`8adbe51`), old main at `archive/main-py39` (pinned, 3.9) |
 
 ### Stage 0: inventory (read-only)
 - [ ] List every Code Ocean capsule and pipeline that installs this library, including the batch
@@ -243,8 +244,21 @@ pandas 3 and other upgrades become separate, deliberate steps: edit the constrai
       `env_00_reference_sessions.ipynb` (the capsule's 3.9-run outputs vs. the duplicate's 3.12
       run) was resolved by merging and keeping the 3.12 version. `wild` @ `6e36ef2` has
       byte-identical files to `0a3c9ce`.*
-- [ ] Archive the duplicate capsule.
-- [ ] Then carry the change to `main` and the other active branches (below).
+- [x] Archive the duplicate capsule. *2026-09-25: synced, then archived. Its final sync
+      (`env/py312` @ `33da61c`) renamed the capsule in `metadata/metadata.yml`, so **never merge
+      `env/py312` again**. It stays as history only.*
+- [x] Then carry the change to `main` and the other active branches (below). *2026-09-25:*
+      - *`kinematics-manuscript`: merged `wild` (`fddaaa2`), so it's on 3.12.*
+      - *`local-dev`: retired. Tagged `archive/local-dev` (`7f33cd1`), branch deleted.*
+      - *`main`: promoted. The old main got a pin commit (`ebd54b9`: AIND libs pinned to the 3.9
+        baseline SHAs, so its 3.9 image stays buildable after Stage 3), tagged
+        `archive/main-py39`. Then `main` = merge of that + `wild` (`8adbe51`), with files
+        byte-identical to `wild` @ `6e36ef2`. Fast-forward push; nothing rewritten. Old main's
+        June edits (two now-archived notebooks; attaching `LCrecordings_combined_units` in
+        `.codeocean/datasets.json`) live on in the tag and in main's history.*
+      - *Note: main's June code imports some library names that no library commit has (e.g.
+        `generate_tongue_dfs_new` was renamed in Oct 2025), so a few old notebooks can't import
+        on any pin. The pin guarantees only that the image builds.*
 - [ ] **Every active `kinematics_analysis` branch, not just `main`.** As of 2026-09-24, `main`,
       `kinematics-manuscript`, `local-dev` and `wild` each have their own Dockerfile on the py3.9
       image, installing this library from `@main`. For each branch, either merge `main` in after
