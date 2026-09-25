@@ -57,6 +57,7 @@ The library's own imports also matter: `aind_dynamic_foraging_basic_analysis` an
 | 2026-09-25 | 2c: merged into `wild` | `kinematics_analysis` `wild` @ `0a3c9ce` | Next: rebuild original capsule, archive duplicate, then other branches |
 | 2026-09-25 | **2c: original capsule on Python 3.12** | `wild` @ `6e36ef2` | Rebuilt; eph_01 runs. Next: archive duplicate; migrate or pin `main`, `kinematics-manuscript`, `local-dev` |
 | 2026-09-25 | **2c: branches done** | `kinematics_analysis` | manuscript on 3.12; local-dev retired (`archive/local-dev`); main promoted to wild (`8adbe51`), old main at `archive/main-py39` (pinned, 3.9) |
+| 2026-09-25 | `kinematics_analysis` CLAUDE.md updated | `wild` @ `7715fe6` | Branch roles: `wild` = dev with Claude, `main` = verified code (promote by merging `wild`). 3.12 syntax allowed. **Stage 2 done for `kinematics_analysis`.** Remaining gate for Stage 3: the Stage 0 capsules |
 
 ### Stage 0: inventory (read-only)
 - [ ] List every Code Ocean capsule and pipeline that installs this library, including the batch
@@ -130,8 +131,9 @@ unsaved `/results`).
       git remote is the same GitHub repo and that its data assets are attached. **All Dockerfile
       work happens in the duplicate. The original capsule stays on 3.9 until 2c.**
       *2026-09-24: done (user). The duplicate is linked to GitHub, on `env/py312`.*
-- [ ] Note which Code Ocean capsule, if any, runs each other branch (`kinematics-manuscript`,
+- [x] Note which Code Ocean capsule, if any, runs each other branch (`kinematics-manuscript`,
       `wild`, `local-dev`). Each of those capsules needs the change or a pin before Stage 3.
+      *2026-09-25: resolved by the branch decisions in 2c: manuscript on 3.12, local-dev retired, main promoted.*
 
 **Rollback at any point:** before 2c, delete the duplicate capsule and nothing else has
 changed. After 2c, `git revert` the Dockerfile commit and rebuild, which gives the exact 3.9
@@ -259,13 +261,15 @@ pandas 3 and other upgrades become separate, deliberate steps: edit the constrai
       - *Note: main's June code imports some library names that no library commit has (e.g.
         `generate_tongue_dfs_new` was renamed in Oct 2025), so a few old notebooks can't import
         on any pin. The pin guarantees only that the image builds.*
-- [ ] **Every active `kinematics_analysis` branch, not just `main`.** As of 2026-09-24, `main`,
+- [x] **Every active `kinematics_analysis` branch, not just `main`.** As of 2026-09-24, `main`,
       `kinematics-manuscript`, `local-dev` and `wild` each have their own Dockerfile on the py3.9
       image, installing this library from `@main`. For each branch, either merge `main` in after
       the Dockerfile migration, or pin the library to the last-3.9 tag in that branch's
       Dockerfile (suits branches frozen for a manuscript).
-- [ ] Branches of *this* library (e.g. `LC_manuscript`) need nothing. They keep their own
+      *2026-09-25: done, see 2c above.*
+- [x] Branches of *this* library (e.g. `LC_manuscript`) need nothing. They keep their own
       `requires-python` until they merge `main`, and 3.9 code runs fine on 3.11+.
+      *Confirmed; no action.*
 - [ ] Move each unknown capsule from Stage 0 to 3.11 or newer (the AIND template is a good
       default), or pin it to a SHA/tag.
 - [ ] Optional hygiene: move the `@main` installs in consumers to a tag. This is what makes
