@@ -53,6 +53,7 @@ The library's own imports also matter: `aind_dynamic_foraging_basic_analysis` an
 | 2026-09-25 | 2b: spot-checks in progress | duplicate capsule | `eph_09` hit the empty-scratch issue; using the saved scratch asset. Scratch-to-data-asset work logged in `kinematics_analysis` TODO, deferred until after adoption |
 | 2026-09-25 | 2b: most spot-checks pass | duplicate capsule | All modules import; eph_01, kin_02, fip_01 run; pymongo C ext OK. Pending: eph_09, kin_03, kin_07 |
 | 2026-09-25 | 2b: kernel-hang fix | `env/py312` @ `1024923` | eph_09, kin_03 pass. debugpy 1.6.6 -> 1.8.20, ipykernel 6.29.5. Next: rebuild, rerun kin_07 |
+| 2026-09-25 | **2b done**; 2c prepared | `env/py312` @ `e71b64e` | kin_07 passes, all spot-checks done. Adoption changes committed. Next: merge into `wild`, rebuild original capsule |
 
 ### Stage 0: inventory (read-only)
 - [ ] List every Code Ocean capsule and pipeline that installs this library, including the batch
@@ -180,7 +181,7 @@ pandas 3 and other upgrades become separate, deliberate steps: edit the constrai
       `tongue_quality_stats.json`: no DIFF, no "close" rows.*
 - [ ] Save `scratch/env_reference/py312/` (including `comparison_vs_baseline.csv`) as a data
       asset, as the record.
-- [ ] Spot-check notebooks the batch pipeline doesn't exercise, in the duplicate:
+- [x] Spot-check notebooks the batch pipeline doesn't exercise, in the duplicate:
       `eph_09_structural_axes` (scanpy + MERFISH), an ephys notebook that loads recordings
       (spikeinterface + `wavpack-numcodecs`), one `kin_` and one `fip_`. Pass = runs without
       import errors or crashes.
@@ -198,9 +199,9 @@ pandas 3 and other upgrades become separate, deliberate steps: edit the constrai
       - [x] *`pymongo.has_c()` is `True`: the source-built C extensions compiled*
       - [x] *`eph_09` (scanpy, trimesh; long-running)*
       - [x] *`kin_03_umap` (numba / llvmlite)*
-      - [ ] *`kin_07_value_encoding` or `model_quality` (live docDB query through
-        `aind_analysis_arch_result_access` → pymongo). First attempt hung at kernel start, see
-        below.*
+      - [x] *`kin_07_value_encoding` (live docDB query through
+        `aind_analysis_arch_result_access` → pymongo). Passed after the kernel fix below; notebooks
+        now start cleanly with "Run All".*
       - *Kernel hang when first running a notebook from VS Code (eph_01, kin_07), at the
         first code cell; imports were fine in a terminal. Cause: `debugpy` was still 1.6.6
         (baseline), which predates 3.12 support; it installed via a generic py2.py3 wheel, so the
@@ -219,14 +220,20 @@ pandas 3 and other upgrades become separate, deliberate steps: edit the constrai
   `LCrecordings_combined_units/combined_unit_tbl.pkl` (md5 check first). This is logged in
   `kinematics_analysis/TODO.md` (`wild` @ `47632e8`) and gets done *after* adoption, one input
   per commit, so any change in results can be attributed to the data, not to Python.
-- [ ] At adoption (2c), update `kinematics_analysis/CLAUDE.md` lines ~20 and ~70 ("Python 3.9
+- [x] At adoption (2c), update `kinematics_analysis/CLAUDE.md` lines ~20 and ~70 ("Python 3.9
       compatible syntax only", `requires-python = ">=3.9"`). Note that the library supports
-      3.11+, so shared code should avoid 3.12-only features.
+      3.11+, so shared code should avoid 3.12-only features. *Done on `env/py312` @ `e71b64e`: the
+      3.9-syntax rule stays until every active branch has migrated, because code moves between
+      branches.*
 
 #### 2c. Adopt it
-- [ ] Before merging: in `environment/Dockerfile` on `env/py312`, set the three AIND libraries
+- [x] Before merging: in `environment/Dockerfile` on `env/py312`, set the three AIND libraries
       back from their baseline SHAs to `@main`, and decide whether to keep
-      `aind-dynamic-foraging-models==0.16.0` in `py39-constraints.txt`.
+      `aind-dynamic-foraging-models==0.16.0` in `py39-constraints.txt`. *Done @ `e71b64e`: back
+      on `@main`. Upstream since the baseline: basic-analysis `compute_side_bias` try/except (NaN
+      instead of raising), data-utils `hdmf_zarr<0.14` cap. models kept at 0.16.0. Resolves on
+      Linux 3.12; only those two library commits differ from the tested environment.
+      `env/py312` -> `wild` merges cleanly.*
 - [ ] Merge `env/py312` into `wild` (the capsule's working branch), rebuild the original
       capsule once, and archive the duplicate. Then carry it to `main` and the other active
       branches (below).
