@@ -58,17 +58,24 @@ The library's own imports also matter: `aind_dynamic_foraging_basic_analysis` an
 | 2026-09-25 | **2c: original capsule on Python 3.12** | `wild` @ `6e36ef2` | Rebuilt; eph_01 runs. Next: archive duplicate; migrate or pin `main`, `kinematics-manuscript`, `local-dev` |
 | 2026-09-25 | **2c: branches done** | `kinematics_analysis` | manuscript on 3.12; local-dev retired (`archive/local-dev`); main promoted to wild (`8adbe51`), old main at `archive/main-py39` (pinned, 3.9) |
 | 2026-09-25 | `kinematics_analysis` CLAUDE.md updated | `wild` @ `7715fe6` | Branch roles: `wild` = dev with Claude, `main` = verified code (promote by merging `wild`). 3.12 syntax allowed. **Stage 2 done for `kinematics_analysis`.** Remaining gate for Stage 3: the Stage 0 capsules |
+| 2026-09-25 | Stage 1 merged; Stage 0 closed; `env/py312` retired | library `main` @ `d94854f`; tag `archive/env-py312` | Only Stage 3 gate left: the video re-encoding capsule (user) |
+| 2026-09-26 | Stage 3 prepared | branch `build/python-311-floor`; tag `py39-final` → `d94854f` | Gate cleared (re-encoding capsule pinned). `requires-python >=3.11`, CI 3.11/3.12. PR open for review |
 
 ### Stage 0: inventory (read-only)
-- [ ] List every Code Ocean capsule and pipeline that installs this library, including the batch
-      tongue-kinematics pipeline and the video re-encoding capsule named in
-      `VIDEO_CLIPS_MIGRATION_PLAN.md`. For each, record its Python version and whether it pins a SHA or tracks `@main`.
-      (`lcephystonguemovements` was not found in this repo or `kinematics_analysis`. Locate it.)
-- [x] Check `requires-python` on `main` for `aind-dynamic-foraging-basic-analysis` and
-      `aind-dynamic-foraging-data-utils`. *2026-09-24: both are `>=3.9` and on PyPI (0.4.6 and
-      0.1.56), and both install and import on 3.11 and 3.12.*
-- [ ] Ask collaborators whether anyone runs this library from a personal or other-team 3.9
-      environment that isn't in a repo.
+- [x] List every Code Ocean capsule and pipeline that installs this library. *2026-09-25:*
+      - *The "batch pipeline" in the README **is** `kinematics_analysis`'s Reproducible Run
+        (`code/run` → `run_batch_analysis.py` → `run_batch_analysis`). It's on 3.12 and was
+        validated bit-for-bit (Stage 2b).*
+      - *The video re-encoding capsule is the user's own. It runs **Python 3.10.9**
+        (`c1-vscode:4.20.0` base; its other AIND deps are PyPI-pinned) and installs this library
+        from `@main`, so **Stage 3 would break its next build.** Fix: pin that one line to
+        `@d94854f4f8072bd76823855c6b29ec6a452a2c4a` (library `main` after Stage 1), then rebuild.
+        Follow-up: to take any post-Stage-3 library version (notably `video_clips.py` from
+        `VIDEO_CLIPS_MIGRATION_PLAN.md`, which targets this capsule), first move it to 3.11+,
+        e.g. the AIND template as in Stage 2.*
+      - *No other capsules use the library.*
+- [x] Ask collaborators whether anyone runs this library from a personal or other-team 3.9
+      environment that isn't in a repo. *2026-09-25: none known (user).*
 - [ ] Optional: open a blank capsule and note the other base images AIND's CO offers, in case a
       better fit than the template exists.
 
@@ -93,7 +100,7 @@ The library's own imports also matter: `aind_dynamic_foraging_basic_analysis` an
 - [x] Fix the README badge (now `>=3.9`) and install instructions (`.[kinematics]`).
 - [x] CI green on GitHub for all three versions. *2026-09-24, PR #5: 3.9, 3.11 and 3.12 all
       pass, and `libgl1` is enough for opencv on the runner.*
-- [ ] Merge the Stage 1 PR into `main`.
+- [x] Merge the Stage 1 PR into `main`. *2026-09-25: PR #5 merged (`d94854f`).*
 - [ ] Optional: fix the README coverage and interrogate badges, which claim 100%.
 
 ### Stage 2: migrate consumers
@@ -184,8 +191,8 @@ pandas 3 and other upgrades become separate, deliberate steps: edit the constrai
       *2026-09-25: **bit-for-bit identical.** 2 sessions (`behavior_716325_2024-05-31_10-31-14`,
       `behavior_717259_2024-06-28_11-17-19`), 17 parquet files each, plus
       `tongue_quality_stats.json`: no DIFF, no "close" rows.*
-- [ ] Save `scratch/env_reference/py312/` (including `comparison_vs_baseline.csv`) as a data
-      asset, as the record.
+- [x] Save `scratch/env_reference/py312/` (including `comparison_vs_baseline.csv`) as a data
+      asset, as the record. *2026-09-25: saved (user).*
 - [x] Spot-check notebooks the batch pipeline doesn't exercise, in the duplicate:
       `eph_09_structural_axes` (scanpy + MERFISH), an ephys notebook that loads recordings
       (spikeinterface + `wavpack-numcodecs`), one `kin_` and one `fip_`. Pass = runs without
@@ -276,18 +283,32 @@ pandas 3 and other upgrades become separate, deliberate steps: edit the constrai
       future floor bumps safe by default.
 
 ### Stage 3: raise the floor (separate PR, only after Stage 2 is done)
-- [ ] **Gate:** confirm every consumer *and every active branch of each consumer* is on 3.11+
-      or pinned to a tag or SHA. Otherwise, rebuilding a stale branch breaks.
-- [ ] Tag the last 3.9-compatible commit (for example `v0.1.0` / `py39-final`, since only
-      `v0.0.0` exists). Record it in the README so 3.9 holdouts can pin
-      `@<tag>`.
-- [ ] `pyproject.toml`: `requires-python = ">=3.11"`, `target_version = ['py311']`, and add
-      `Programming Language :: Python :: 3.11` / `3.12` classifiers.
-- [ ] CI matrix: drop 3.9 and keep 3.11 + 3.12.
-- [ ] Update `VIDEO_CLIPS_MIGRATION_PLAN.md` ("works on Python 3.9").
+- [x] **Gate:** every consumer, and every active branch of each consumer, is on 3.11+ or pinned
+      to a tag or SHA. Otherwise, rebuilding a stale branch breaks. *Cleared 2026-09-25:*
+      - *`kinematics_analysis`: `wild`, `main` and `kinematics-manuscript` are on 3.12;
+        `archive/main-py39` is pinned.*
+      - *`aind-motion-energy-capsule`, `aind-BEAST-train-test`: 3.11, pinned SHAs.*
+      - *Video re-encoding capsule: Python 3.10.9, library pinned to `@d94854f` and rebuilt. Its
+        Dockerfile also had a latent `COPY git-askpass` typo (should be `git-ask-pass`), exposed
+        by the forced rebuild and fixed.*
+- [x] Tag the last 3.9-compatible commit. *`py39-final` → `d94854f` (library `main` after
+      Stage 1), pushed. The README gives the install line.*
+- [x] `pyproject.toml`: `requires-python = ">=3.11"`, `target_version = ['py311']`, 3.9 classifier
+      removed (3.11 and 3.12 remain).
+- [x] CI matrix: drop 3.9 and keep 3.11 + 3.12.
+- [x] README: badge `>=3.11`, and the `py39-final` install line for 3.9/3.10 environments.
+- [x] ~~Update `VIDEO_CLIPS_MIGRATION_PLAN.md` ("works on Python 3.9")~~. *Not needed: that plan
+      (local branch `plan/video-clips-migration` @ `4094a20`) already makes "move the capsule to
+      3.11/3.12" its Phase 0. Worth adding when that branch is next touched: the capsule is on
+      3.10.9 and pinned to `d94854f`.*
+- *Verified locally 2026-09-26: fresh 3.11 and 3.12 venvs install `.[kinematics,dev]` and pass
+  the tests + flake8 error checks. A 3.9 venv is refused ("requires a different Python: 3.9.21
+  not in '>=3.11'"), and `@d94854f` still installs on 3.9.*
+- [ ] Merge the Stage 3 PR.
 - [ ] Optional follow-up PR (not in the same one): modernize syntax, for example
       `Optional[X]` → `X | None`. Keep it separate so the floor bump stays easy to revert.
-- [ ] Announce to consumers: what changed, the 3.9 tag, and the date.
+- [ ] Announce to consumers: what changed, the 3.9 tag, and the date. *All known consumers are
+      the user's own, so this is just a note in the PR, unless others adopt the library later.*
 
 ## Verification
 - CI green on 3.9 + 3.11 + 3.12 (Stage 1), then on 3.11 + 3.12 (Stage 3).

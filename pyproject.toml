@@ -6,13 +6,12 @@ build-backend = "setuptools.build_meta"
 name = "aind-dynamic-foraging-behavior-video-analysis"
 description = "Generated from aind-library-template"
 license = {text = "MIT"}
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 authors = [
     {name = "Allen Institute for Neural Dynamics"}
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12"
 ]
@@ -59,7 +58,7 @@ version = {attr = "aind_dynamic_foraging_behavior_video_analysis.__version__"}
 
 [tool.black]
 line-length = 79
-target_version = ['py39']
+target_version = ['py311']
 exclude = '''
 
 (
