@@ -52,6 +52,7 @@ The library's own imports also matter: `aind_dynamic_foraging_basic_analysis` an
 | 2026-09-25 | 2b: reference comparison passed | duplicate capsule | 3.12 outputs bit-for-bit identical to 3.9 on 2 sessions. Next: spot-check notebooks, then adopt (2c) |
 | 2026-09-25 | 2b: spot-checks in progress | duplicate capsule | `eph_09` hit the empty-scratch issue; using the saved scratch asset. Scratch-to-data-asset work logged in `kinematics_analysis` TODO, deferred until after adoption |
 | 2026-09-25 | 2b: most spot-checks pass | duplicate capsule | All modules import; eph_01, kin_02, fip_01 run; pymongo C ext OK. Pending: eph_09, kin_03, kin_07 |
+| 2026-09-25 | 2b: kernel-hang fix | `env/py312` @ `1024923` | eph_09, kin_03 pass. debugpy 1.6.6 -> 1.8.20, ipykernel 6.29.5. Next: rebuild, rerun kin_07 |
 
 ### Stage 0: inventory (read-only)
 - [ ] List every Code Ocean capsule and pipeline that installs this library, including the batch
@@ -195,10 +196,19 @@ pandas 3 and other upgrades become separate, deliberate steps: edit the constrai
         import)*
       - [x] *`eph_01`, `kin_02`, `fip_01` run end to end*
       - [x] *`pymongo.has_c()` is `True`: the source-built C extensions compiled*
-      - [ ] *`eph_09` (scanpy, trimesh; long-running)*
-      - [ ] *`kin_03_umap` (numba / llvmlite)*
+      - [x] *`eph_09` (scanpy, trimesh; long-running)*
+      - [x] *`kin_03_umap` (numba / llvmlite)*
       - [ ] *`kin_07_value_encoding` or `model_quality` (live docDB query through
-        `aind_analysis_arch_result_access` → pymongo)*
+        `aind_analysis_arch_result_access` → pymongo). First attempt hung at kernel start, see
+        below.*
+      - *Kernel hang when first running a notebook from VS Code (eph_01, kin_07), at the
+        first code cell; imports were fine in a terminal. Cause: `debugpy` was still 1.6.6
+        (baseline), which predates 3.12 support; it installed via a generic py2.py3 wheel, so the
+        wheel check passed it. Fixed on `env/py312` @ `1024923`: debugpy 1.8.20, ipykernel held at
+        6.29.5 (had floated to 7.1). **Lesson: "has a wheel" should mean a compiled cp312 wheel
+        when the package ships compiled wheels at all.** A scan for that pattern found only
+        pymongo (verified) and pyrsistent (Jupyter-only, pure fallback). Needs a rebuild, then
+        confirm notebooks start cleanly with "Run All".*
       - *Not needed: spikeinterface / `wavpack-numcodecs` aren't imported anywhere in the code.*
       - *Deferred, low priority: `pixel_error` (OpenCV), `attach_data` (Code Ocean SDK + PyYAML;
         import cell only, since it attaches assets).*
