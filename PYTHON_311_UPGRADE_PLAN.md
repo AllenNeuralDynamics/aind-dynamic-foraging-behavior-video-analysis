@@ -50,6 +50,7 @@ The library's own imports also matter: `aind_dynamic_foraging_basic_analysis` an
 | 2026-09-25 | 2b: build 1 failed (PyYAML 6.0), fixed | `env/py312` @ `d9ffba3` | Wheel-less compiled deps bumped; AIND libs pinned to baseline. Next: rebuild |
 | 2026-09-25 | 2b: build 2 succeeded | duplicate capsule | VS Code launches; reference comparison running |
 | 2026-09-25 | 2b: reference comparison passed | duplicate capsule | 3.12 outputs bit-for-bit identical to 3.9 on 2 sessions. Next: spot-check notebooks, then adopt (2c) |
+| 2026-09-25 | 2b: spot-checks in progress | duplicate capsule | `eph_09` hit the empty-scratch issue; using the saved scratch asset. Scratch-to-data-asset work logged in `kinematics_analysis` TODO, deferred until after adoption |
 
 ### Stage 0: inventory (read-only)
 - [ ] List every Code Ocean capsule and pipeline that installs this library, including the batch
@@ -177,8 +178,22 @@ pandas 3 and other upgrades become separate, deliberate steps: edit the constrai
       `tongue_quality_stats.json`: no DIFF, no "close" rows.*
 - [ ] Save `scratch/env_reference/py312/` (including `comparison_vs_baseline.csv`) as a data
       asset, as the record.
-- [ ] Spot-check a few analysis notebooks (for example a `kin_` and an `eph_` notebook) in the
-      duplicate.
+- [ ] Spot-check notebooks the batch pipeline doesn't exercise, in the duplicate:
+      `eph_09_structural_axes` (scanpy + MERFISH), an ephys notebook that loads recordings
+      (spikeinterface + `wavpack-numcodecs`), one `kin_` and one `fip_`. Pass = runs without
+      import errors or crashes.
+      *2026-09-25: `eph_09` first failed on `SCRATCH / "combined_unit_tbl.pkl"`. Not a 3.12
+      problem: **a duplicated capsule doesn't get the original's `/scratch`.** Fix for the
+      spot-check: save the old capsule's scratch as a data asset, attach it, and symlink or copy
+      its files into the duplicate's scratch. Notebooks stay unchanged and read byte-identical
+      inputs. Don't substitute a different file (e.g. the upstream table under
+      `LC-NE_scratch_data_1/combined/combine_unit_tbl/`, which eph_08/09 use only for CCF
+      coordinates).*
+- **Out of scope for this migration, tracked separately:** moving all scratch-dependent inputs
+  into data assets, including switching the unit table to the official
+  `LCrecordings_combined_units/combined_unit_tbl.pkl` (md5 check first). This is logged in
+  `kinematics_analysis/TODO.md` (`wild` @ `47632e8`) and gets done *after* adoption, one input
+  per commit, so any change in results can be attributed to the data, not to Python.
 - [ ] At adoption (2c), update `kinematics_analysis/CLAUDE.md` lines ~20 and ~70 ("Python 3.9
       compatible syntax only", `requires-python = ">=3.9"`). Note that the library supports
       3.11+, so shared code should avoid 3.12-only features.
