@@ -51,6 +51,7 @@ The library's own imports also matter: `aind_dynamic_foraging_basic_analysis` an
 | 2026-09-25 | 2b: build 2 succeeded | duplicate capsule | VS Code launches; reference comparison running |
 | 2026-09-25 | 2b: reference comparison passed | duplicate capsule | 3.12 outputs bit-for-bit identical to 3.9 on 2 sessions. Next: spot-check notebooks, then adopt (2c) |
 | 2026-09-25 | 2b: spot-checks in progress | duplicate capsule | `eph_09` hit the empty-scratch issue; using the saved scratch asset. Scratch-to-data-asset work logged in `kinematics_analysis` TODO, deferred until after adoption |
+| 2026-09-25 | 2b: most spot-checks pass | duplicate capsule | All modules import; eph_01, kin_02, fip_01 run; pymongo C ext OK. Pending: eph_09, kin_03, kin_07 |
 
 ### Stage 0: inventory (read-only)
 - [ ] List every Code Ocean capsule and pipeline that installs this library, including the batch
@@ -189,6 +190,20 @@ pandas 3 and other upgrades become separate, deliberate steps: edit the constrai
       inputs. Don't substitute a different file (e.g. the upstream table under
       `LC-NE_scratch_data_1/combined/combine_unit_tbl/`, which eph_08/09 use only for CCF
       coordinates).*
+      *Results 2026-09-25 (duplicate, Python 3.12.4):*
+      - [x] *every module in `code/*.py` imports (except `run_*` / `backup_*`, which execute on
+        import)*
+      - [x] *`eph_01`, `kin_02`, `fip_01` run end to end*
+      - [x] *`pymongo.has_c()` is `True`: the source-built C extensions compiled*
+      - [ ] *`eph_09` (scanpy, trimesh; long-running)*
+      - [ ] *`kin_03_umap` (numba / llvmlite)*
+      - [ ] *`kin_07_value_encoding` or `model_quality` (live docDB query through
+        `aind_analysis_arch_result_access` → pymongo)*
+      - *Not needed: spikeinterface / `wavpack-numcodecs` aren't imported anywhere in the code.*
+      - *Deferred, low priority: `pixel_error` (OpenCV), `attach_data` (Code Ocean SDK + PyYAML;
+        import cell only, since it attaches assets).*
+      - *Housekeeping: close each notebook's kernel when done. Kernels left running in one
+        workstation (one used 29 GB) stalled a new kernel's startup.*
 - **Out of scope for this migration, tracked separately:** moving all scratch-dependent inputs
   into data assets, including switching the unit table to the official
   `LCrecordings_combined_units/combined_unit_tbl.pkl` (md5 check first). This is logged in
