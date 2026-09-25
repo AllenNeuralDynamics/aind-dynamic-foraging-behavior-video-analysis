@@ -47,6 +47,7 @@ The library's own imports also matter: `aind_dynamic_foraging_basic_analysis` an
 |---|---|---|---|
 | 2026-09-24 | Stage 1 done, in review | PR #5 (`build/python-311-support`) | CI passes on 3.9, 3.11 and 3.12 |
 | 2026-09-24 | Stage 2a done; 2b drafted | `kinematics_analysis` `env/py312` @ `2510b5e` | Duplicate capsule on `env/py312`; 3.12 Dockerfile + `py39-constraints.txt` pushed. Next: build it on CO |
+| 2026-09-25 | 2b: build 1 failed (PyYAML 6.0), fixed | `env/py312` @ `d9ffba3` | Wheel-less compiled deps bumped; AIND libs pinned to baseline. Next: rebuild |
 
 ### Stage 0: inventory (read-only)
 - [ ] List every Code Ocean capsule and pipeline that installs this library, including the batch
@@ -153,7 +154,15 @@ pandas 3 and other upgrades become separate, deliberate steps: edit the constrai
   - [x] `--ignore-requires-python` for `rachel-analysis-utils` removed.
   - [x] `scanpy`: held at 1.10.3 by the constraints file for the migration. It can be bumped
         later.
-- [ ] **Build the duplicate capsule's environment** on Code Ocean. Check that JupyterLab and
+- [ ] **Build the duplicate capsule's environment** on Code Ocean.
+      *Build 1 (2026-09-25) failed: `PyYAML==6.0` (baseline) has no 3.12 wheel, and its source
+      build breaks under Cython 3. Lesson: "resolves" isn't the same as "has a wheel". Every
+      resolved package was then checked for a Linux 3.12 wheel. Fixed on `env/py312` @
+      `d9ffba3`: PyYAML 6.0.1, pyzmq 25.1.1, MarkupSafe 2.1.3 (smallest bumps with wheels).
+      pymongo stays 4.3.3, pinned exactly by `aind-data-access-api`; its C extensions are
+      optional. Source-built on 3.12: asciitree, moviepy, open-ephys-python-tools, zmq (pure
+      Python), pymongo, wavpack-numcodecs. The AIND libs are also pinned to their baseline SHAs,
+      and `aind-dynamic-foraging-models` to 0.16.0, so the comparison isolates Python.* Check that JupyterLab and
       the `postInstall` code-server setup launch.
       Fallback if 3.12 turns out to be painful: install 3.11 into the same template image
       (`RUN mamba install -y python=3.11` after `FROM`). The constraints file stays the same.
@@ -167,6 +176,9 @@ pandas 3 and other upgrades become separate, deliberate steps: edit the constrai
       3.11+, so shared code should avoid 3.12-only features.
 
 #### 2c. Adopt it
+- [ ] Before merging: in `environment/Dockerfile` on `env/py312`, set the three AIND libraries
+      back from their baseline SHAs to `@main`, and decide whether to keep
+      `aind-dynamic-foraging-models==0.16.0` in `py39-constraints.txt`.
 - [ ] Merge `env/py312` into `wild` (the capsule's working branch), rebuild the original
       capsule once, and archive the duplicate. Then carry it to `main` and the other active
       branches (below).
