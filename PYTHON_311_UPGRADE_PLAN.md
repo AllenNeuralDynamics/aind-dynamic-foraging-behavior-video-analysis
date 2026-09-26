@@ -60,6 +60,7 @@ The library's own imports also matter: `aind_dynamic_foraging_basic_analysis` an
 | 2026-09-25 | `kinematics_analysis` CLAUDE.md updated | `wild` @ `7715fe6` | Branch roles: `wild` = dev with Claude, `main` = verified code (promote by merging `wild`). 3.12 syntax allowed. **Stage 2 done for `kinematics_analysis`.** Remaining gate for Stage 3: the Stage 0 capsules |
 | 2026-09-25 | Stage 1 merged; Stage 0 closed; `env/py312` retired | library `main` @ `d94854f`; tag `archive/env-py312` | Only Stage 3 gate left: the video re-encoding capsule (user) |
 | 2026-09-26 | Stage 3 prepared | branch `build/python-311-floor`; tag `py39-final` → `d94854f` | Gate cleared (re-encoding capsule pinned). `requires-python >=3.11`, CI 3.11/3.12. PR open for review |
+| 2026-09-26 | **Stage 3 merged: upgrade complete** | library `main` @ `5738b32` | `requires-python >=3.11`. Open follow-ups: optional syntax-modernization PR; the re-encoding capsule's image to 3.11+ (tracked in `VIDEO_CLIPS_MIGRATION_PLAN.md`, Phase 0) |
 
 ### Stage 0: inventory (read-only)
 - [x] List every Code Ocean capsule and pipeline that installs this library. *2026-09-25:*
@@ -304,7 +305,8 @@ pandas 3 and other upgrades become separate, deliberate steps: edit the constrai
 - *Verified locally 2026-09-26: fresh 3.11 and 3.12 venvs install `.[kinematics,dev]` and pass
   the tests + flake8 error checks. A 3.9 venv is refused ("requires a different Python: 3.9.21
   not in '>=3.11'"), and `@d94854f` still installs on 3.9.*
-- [ ] Merge the Stage 3 PR.
+- [x] Merge the Stage 3 PR. *2026-09-26: PR #6 merged (`5738b32`); CI on `main` passes on 3.11 and
+      3.12.*
 - [ ] Optional follow-up PR (not in the same one): modernize syntax, for example
       `Optional[X]` → `X | None`. Keep it separate so the floor bump stays easy to revert.
 - [ ] Announce to consumers: what changed, the 3.9 tag, and the date. *All known consumers are

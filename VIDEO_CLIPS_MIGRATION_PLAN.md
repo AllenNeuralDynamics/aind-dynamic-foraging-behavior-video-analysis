@@ -1,8 +1,9 @@
 # Plan: `video_clips.py` — clips around behavioral events, frames for labeling
 
-> Status: pre-implementation, revision 4. Revision 2 followed an adversarial review; revision 3
+> Status: pre-implementation, revision 5. Revision 2 followed an adversarial review; revision 3
 > removed every use of a nominal frame rate; revision 4 hands frame-accurate seeking to
-> `aind-video-utils` and makes a Python upgrade a prerequisite. See "Changes" at the end.
+> `aind-video-utils` and makes a Python upgrade a prerequisite; revision 5 records that the
+> library-side upgrade is done (`PYTHON_311_UPGRADE_PLAN.md`). See "Changes" at the end.
 
 ## Summary
 
@@ -24,17 +25,28 @@ Frame-accurate seeking comes from `aind-video-utils`, which declares `requires-p
 Its code does import and run on 3.9 today (checked against 0.7.0), but nothing guarantees that,
 and installing it on 3.9 needs `--ignore-requires-python`. So the upgrade comes first:
 
+**Status 2026-09-26: the library side is done; the capsule image is still open.** The upgrade
+ran as its own plan, `PYTHON_311_UPGRADE_PLAN.md` (on `main`), which has the details.
+
 1. **Move the capsule image to Python 3.11 or 3.12.** Not 3.10, which reaches end of life in
-   October 2026. 3.9 has been end of life since October 2025.
-2. **Move every other consumer that installs this library.** Consumers install from `main` with
-   no version pin (README "Scope"), so once `requires-python` is raised, a 3.9 environment's
-   `pip install` fails outright instead of falling back to an older version. Known consumers: the
-   clip/re-encoding capsule and the analysis repos built on the kinematics intermediates (e.g.
-   `kinematics_analysis`). Audit for others before raising the floor.
-3. **Then raise the floor here**: `requires-python = ">=3.11"`, black `target_version = ['py311']`,
-   and the README badge (which already says `>=3.10` and disagrees with the pyproject).
-4. **Recommended alongside: start pinning consumers to tags** (`@v0.x`), so future breaking changes
-   are opt-in for consumers rather than a surprise on rebuild.
+   October 2026. 3.9 has been end of life since October 2025. **Still open, and now the only
+   blocker.** The re-encoding capsule runs Python 3.10.9 (`c1-vscode:4.20.0` base) and installs
+   this library pinned to `@d94854f`, the `py39-final` tag. It keeps working as is, but it can't
+   take any library version after that (so no `video_clips.py`) until its image is on 3.11+. The
+   `kinematics_analysis` migration is the template: the AIND capsule base
+   `mambaforge3:24.5.0-0-python3.12.4-ubuntu22.04`, package versions held via a constraints
+   file, and a reference-output comparison in a duplicate capsule.
+2. ~~**Move every other consumer that installs this library.**~~ **Done.** `kinematics_analysis`
+   (`wild`, `main`, `kinematics-manuscript`) is on 3.12, with batch-pipeline outputs verified
+   bit-for-bit against 3.9. `aind-motion-energy-capsule` and `aind-BEAST-train-test` are on 3.11
+   with pinned SHAs. `kinematics_analysis`'s pre-promotion `main` is preserved as tag
+   `archive/main-py39`, pinned.
+3. ~~**Then raise the floor here.**~~ **Done** (PR #6, `5738b32`): `requires-python = ">=3.11"`,
+   black `target_version = ['py311']`, README badge `>=3.11`, CI on 3.11 and 3.12. The last
+   3.9/3.10-compatible commit is tagged `py39-final` (`d94854f`).
+4. **Pin consumers** — *mostly done:* every known consumer now installs from a fixed commit or
+   builds from a branch it controls. Tags beyond `py39-final` (e.g. `v0.x` releases) would make
+   future pins more readable.
 
 The code itself needs no changes for the upgrade: it uses no 3.9-specific workarounds, and its
 AIND dependencies (`aind-dynamic-foraging-data-utils`, `-basic-analysis`) declare `>=3.9`.
@@ -220,9 +232,11 @@ This replaces cv2. sklearn is kept for k-means; hand-writing it isn't worth it.
 
 ### Dependencies
 
-`pyproject.toml` currently declares `dependencies = []`, although `video_alignment.py` already
-imports pandas. Add `numpy`, `pandas`, `scikit-learn`, `aind-video-utils>=0.7` (core only, no
-extras; its only required dependency is numpy).
+`pyproject.toml` declares `numpy` and `pandas` as core dependencies (enough for
+`video_alignment`), and everything else in a `kinematics` extra (added in upgrade Stage 1, PR #5).
+Add `scikit-learn` and `aind-video-utils>=0.7` (core only, no extras; its only required dependency
+is numpy). Whether they belong in core, in `kinematics`, or in a new extra (e.g. `video`) is open;
+see the review notes.
 
 ffmpeg and ffprobe are system binaries, found on `PATH`.
 
@@ -278,7 +292,8 @@ Private helpers:
 
 ## Phases
 
-0. **Python upgrade** (see "Prerequisite" above).
+0. **Python upgrade** (see "Prerequisite" above). *Library side done; the re-encoding capsule's
+   image is still open.*
 1. **Dependencies and event selection.** Update `pyproject.toml`. Port the event functions as pure
    functions and write the missing lick strategy.
 2. **Cutting and sidecars.** `_event_frame_range`, `cut_clip`, `cut_clips_at_events`, sidecar
@@ -314,8 +329,11 @@ Private helpers:
 
 - Python 3.11+ after Phase 0.
 - black and isort at line length 79, flake8, NumPy-style docstrings.
-- `interrogate` and `coverage` both at `fail-under = 100`. There is no CI workflow in the repo, so
-  these are enforced locally.
+- `interrogate` and `coverage` are configured at `fail-under = 100`, but the repo has never met
+  either (14% coverage, 74% docstrings at the upgrade). CI (`.github/workflows/test_and_lint.yml`,
+  Python 3.11 and 3.12) blocks only on unit tests and `flake8 --select=E9,F63,F7,F82`, and reports
+  coverage and interrogate without enforcing them. New modules should still aim for full coverage
+  and docstrings.
 
 ## Verification
 
@@ -347,6 +365,15 @@ Private helpers:
    Ideally repeat on a session known to have concatenation seams.
 5. **Guard test.** A CSV one row short gives `frames_verified: false`.
 6. black, isort, flake8, interrogate, coverage.
+
+## Changes from revision 4
+
+- **Phase 0 status recorded.** The library-side upgrade is done (`PYTHON_311_UPGRADE_PLAN.md`,
+  PRs #5 and #6). The only remaining prerequisite is moving the re-encoding capsule's image from
+  Python 3.10.9 to 3.11+; it's pinned to `py39-final` (`d94854f`) until then.
+- "Dependencies" and "Constraints" updated to match the repo after the upgrade: declared
+  dependencies with a `kinematics` extra, and a CI workflow.
+- Branch rebased onto `main` after PR #6.
 
 ## Changes from revision 3
 
