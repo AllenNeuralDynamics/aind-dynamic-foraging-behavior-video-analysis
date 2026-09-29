@@ -1,29 +1,31 @@
 # Plan: `video_timing_qc` — QC and correction of behavior-video timestamps
 
-> Status: pre-implementation, revision 1 (2026-09-29). Nothing in this plan is implemented yet.
-> Written so a new contributor or agent can pick it up without the conversation that produced it;
-> the evidence behind each decision is in "Background" and "Findings".
+> Status: revision 2 (2026-09-29). Phases 1 and 2 implemented on branch `plan/video-timing-qc`;
+> Phases 3–4 not started. Written so a new contributor or agent can pick it up without the
+> conversation that produced it; the evidence behind each decision is in "Background" and
+> "Findings".
 
 ## Summary
 
-Add one new subpackage, `aind_dynamic_foraging_behavior_video_analysis.video_timing_qc`, that takes
-either **a session folder** or **a single behavior-video CSV** and:
+One new module, `aind_dynamic_foraging_behavior_video_analysis.video_timing_qc`, that takes a
+behavior-video CSV (or a whole `behavior-videos` folder) and:
 
 1. **Checks** the per-frame timestamps: frame-number continuity, agreement between the Harp clock
-   and the camera clock, and the Harp "slip" caused by dropped frames.
-2. **Reports** a structured result (class, counts, row indices) instead of printing warnings.
-3. **Optionally corrects** the Harp time per frame, for two well-understood failure modes only,
-   marking every changed row with where its value came from.
+   and the camera clock, isolated bad Harp rows, and the Harp "slip" caused by dropped frames.
+2. **Reports** the result as a plain dict (class, counts, row indices), or a DataFrame with one
+   row per camera.
+3. **Corrects** the Harp time per frame for two well-understood failure modes only, marking every
+   row with where its value came from. Rows the CSV cannot supply are estimated from camera time,
+   or read from the Harp camera trigger log if the caller passes it.
 
-It must use only the core dependencies (`numpy`, `pandas`), and add only new code at first: no
-existing function changes behavior until a consumer opts in (see "Rollout without breaking
-anything").
+It uses only the core dependencies (`numpy`, `pandas`). `integrate_keypoints_with_video_time`
+now uses it in place of its old QC (Phase 2).
 
 Why: the Bonsai workflow that writes these CSVs pairs video frames with Harp trigger times in
 **arrival order**. When the host drops a frame, every later frame gets the Harp time of an earlier
 trigger. In 18 of 97 recent FIP sessions, Harp times are wrong for essentially the whole session,
-ending 280–670 s early. The existing QC (`integrate_keypoints_with_video_time`) does not detect
-this at its current threshold, and at a tighter threshold its fix would overwrite the correct
+ending 280–670 s early. The old QC in `integrate_keypoints_with_video_time` did not detect
+this at its threshold, and at a tighter threshold its fix would have overwritten the correct
 clock. Every pipeline that puts video-derived signals on the behavior clock (Lightning Pose
 kinematics, motion energy, video clips, BEAST latents) is affected.
 
@@ -87,17 +89,19 @@ single-row blips of 2–6 ms.
 ### The Harp trigger log (optional ground truth)
 
 Each raw session has `behavior/raw.harp/BehaviorEvents/Event_94.bin`: one Harp event per camera
-trigger. **The register's identity is inferred, not documented**: its event count equals the number
-of exposed frames exactly, its values are evenly spaced at the frame interval, and the CSV's Harp
-column equals its first *N* events to the microsecond. Confirm against the Harp Behavior register
-map before depending on it.
+trigger. Register 94 is `Camera1Frame` in the Harp Behavior `device.yml`
+(`harp-tech/device.behavior`). Its event count equals the number of exposed frames, and the CSV's
+Harp column equals its first *N* events.
 
-Format: fixed 13-byte messages: `[type=3][length][address=94][port][payload type=17]`
+Format: fixed 13-byte messages: `[type=3][length=11][address=94][port][payload type=17]`
 `[seconds: uint32 LE][ticks: uint16 LE][payload: uint8 = 1][checksum]`;
-time = seconds + ticks × 32 µs. Both cameras share the one log.
+time = seconds + ticks × 32 µs. All cameras share the one log. `read_harp_trigger_log` parses it
+with numpy and gives the same times as `harp.io.read(path)` from `harp-python` (checked on the 6
+sessions below, difference 0). `harp.data.open_dataset` does not apply here: these sessions have
+no `device.yml` and do not use `<Device>_<address>.bin` names.
 
-Checked on 4 sessions (clean, glitch, drops, new layout): event count == exposures for both
-cameras, CSV row *n* == event *n* for every row.
+Checked on 6 sessions (clean, glitch, drops, glitch + drops, new layout, 3-camera ecephys):
+event count == exposures for every camera, and CSV row *n* == event *n* for every row.
 
 ### Other known issue (detection only)
 
@@ -143,7 +147,7 @@ log:
 | Tail error, linear fit on all exact rows | max 0.077 ms | max 0.123 ms |
 | Rows over 0.5× after correction (log-based) | 0 (was 187,024) | 0 (was 186,003) |
 
-## What the existing QC does
+## What the old QC did (replaced in Phase 2)
 
 `kinematics/tongue_kinematics_utils.py::integrate_keypoints_with_video_time(video_csv_path, keypoint_dfs)`:
 
@@ -181,169 +185,112 @@ Tested against the real function:
 Rule that follows: **never interpolate at or next to a frame gap, and treat the camera clock as the
 trusted one**.
 
-## Goals and non-goals
-
-Goals:
-
-- One place that decides whether a camera's timestamps are trustworthy, used by every pipeline.
-- Accept a session folder (both layouts, all cameras) or a single CSV path / DataFrame.
-- Structured, serialisable results (JSON-able dict, one row per camera for tables).
-- Corrections that are opt-in, exact where possible, marked per row, and verified after applying.
-- Work from the CSV alone; use the trigger log only for optional validation.
-- Core dependencies only.
-
-Non-goals:
-
-- Changing any existing function's default behavior in the first release.
-- Correcting anything other than the two failure modes above. Everything else is reported.
-- Reading video files. The transcode check takes a frame count supplied by the caller (from
-  `aind-video-utils`, `ffprobe`, or motion-energy metadata `n_frames_decoded`).
-
 ## Design
 
-### Module layout
+Kept deliberately flat: one module of plain functions; results are dicts and DataFrames, errors
+are `ValueError`. No classes or report objects.
 
-```
-src/aind_dynamic_foraging_behavior_video_analysis/video_timing_qc/
-    __init__.py      # public API re-exports
-    io.py            # CSV -> canonical frame; session-folder discovery
-    checks.py        # pure detection functions on arrays
-    correct.py       # glitch fix, drop re-indexing, tail estimate
-    report.py        # QCReport / CameraTiming dataclasses, to_dict, to_row
-    triggers.py      # optional: parse Event_94.bin, validate against CSV
-```
-
-`video_alignment.py` stays where it is; `io.py` reuses `read_video_csv` and
-`TIME_COLUMN_ALIASES` rather than duplicating layout detection.
-
-### Canonical columns
-
-`io.load_video_timing(csv_path_or_df) -> pandas.DataFrame` with one row per saved frame:
-
-| Column | Type | Meaning |
-|---|---|---|
-| `row` | int | 0-based row = video frame index |
-| `frame_number` | int64 | camera exposure counter |
-| `camera_time` | float64 s | camera clock (ns / 1e9) |
-| `harp_time_raw` | float64 s | Harp time as written in the CSV, never modified |
-
-Layout-specific column names are mapped by position after `read_video_csv`, with a check that
-headers, when present, are the known ones.
-
-### Detection (`checks.py`)
-
-All vectorised; each returns counts and row indices.
-
-- **IFI**: `median(diff(camera_time))`.
-- **Frame continuity**: `d = diff(frame_number)`; gaps `d > 1` (frames dropped = `d − 1`),
-  repeats/backward `d ≤ 0`.
-- **Backward steps** in Harp and camera time.
-- **Clock disagreement**: `|ΔHarp − ΔCamera| > threshold × IFI`, default threshold **0.5**
-  (parameter, so 2 can be reproduced). Split into flags on a frame gap and flags without one.
-- **Harp glitch rows**, found from the **Harp column alone**: row *r* with
-  `|harp[r] − (harp[r−1] + harp[r+1]) / 2| > 0.5 × IFI` and
-  `|harp[r+1] − harp[r−1] − 2 × IFI| ≤ 0.5 × IFI` (the neighbours agree with each other). This
-  picks the one bad row, not its successor. Runs of ≥ 2 consecutive bad rows are reported, not
-  classed as glitches.
-  Frame numbers and camera time are deliberately **not** part of the rule. Under arrival-order
-  pairing the Harp column is the trigger sequence in order, evenly spaced whether or not frames
-  were dropped, so a glitch shows up the same way in drop sessions. An earlier version of this
-  plan also required frame steps of exactly 1 around the row; with a drop every 7–11 frames that
-  misses about a quarter of glitches in drop sessions (it missed 1 of 4 in
-  `behavior_816214_2025-12-02_08-28-39`, where a glitch row follows a 2-frame drop on the side
-  camera).
-  Caveat: this relies on the pairing. In a workflow that leaves real gaps in Harp at drops, the
-  Harp steps next to a drop are > 1 IFI and the neighbour test fails, so the row is reported, not
-  fixed.
-- **Clock slip**: `((camera_time[-1] − camera_time[0]) − (harp[-1] − harp[0])) / IFI`, in frames;
-  reported, with the expected range from `ok` sessions (about −40…0 frames for ~90 min) as context.
-- **Transcode mismatch** (only if the caller passes `video_frame_count`): `video_frame_count − rows`.
-
-### Classes
-
-Per camera, first match wins:
-
-| Class | Condition | Correctable |
-|---|---|---|
-| `unreadable` | CSV missing, empty, unknown columns, NaNs in required columns | no |
-| `frame_order_error` | any frame step ≤ 0 | no |
-| `transcode_mismatch` | video frame count given and ≠ rows | no (row alignment itself is broken) |
-| `frame_drops` | any frame step > 1 | yes (drop correction) |
-| `harp_glitch` | glitch rows only, no other clock flags | yes (glitch fix) |
-| `clock_disagreement` | clock flags that are neither drops nor clean glitches | no |
-| `ok` | none of the above | nothing to do |
-
-A camera can carry both drops and glitches (2 of the 97 sessions do:
-`behavior_816214_2025-12-02_08-28-39`, `behavior_816212_2025-12-10_13-27-38`). Glitches are fixed
-first, then drops. The order matters: re-indexing copies Harp values to other rows, so an unfixed
-glitch would be moved to a different row, and the post-checks would then refuse the session.
-
-### Correction (`correct.py`)
-
-`correct_video_timing(timing, report, *, fix_glitches=True, fix_drops=True, tail_fit_window_s=600)`
-returns a copy of the timing frame with two added columns and an updated report:
-
-- `harp_time`: corrected Harp time.
-- `harp_source`: one of `original`, `glitch_interpolated`, `reindexed`, `estimated_camera_fit`.
-
-Steps:
-
-1. **Glitch fix.** For each glitch row: `harp[r] = (harp[r−1] + harp[r+1]) / 2`. Only Harp is ever
-   changed. Camera time is never modified by this package.
-2. **Drop re-indexing** (only if frame numbers are strictly increasing):
-   `k = frame_number − frame_number[0]` (true trigger index of each row); `N = rows`.
-   For rows with `k < N`: `harp_time[row] = harp_after_step1[k]`, source `reindexed` (or `original`
-   where `k == row`, i.e. before the first drop).
-   This uses only values already in the CSV, moved to the right row.
-3. **Tail estimate.** Rows with `k ≥ N` need trigger times the CSV never recorded. Fit
-   `harp = a + b × camera_time` on exact rows within the last `tail_fit_window_s` of camera time,
-   predict for tail rows, source `estimated_camera_fit`. (Verified error ≤ 0.07 ms; fitting on the
-   whole session gave ≤ 0.12 ms.)
-4. **Post-checks; refuse on failure.** Corrected Harp strictly increasing; no row over the 0.5×
-   threshold; linear-fit residual of `harp_time` against `camera_time` ≤ 1 ms over the session. If
-   any fails, return the report with class `correction_failed` and no corrected column, never a
-   partially corrected one.
-
-Assumptions (stated in the report and docstrings):
-
-- One Harp trigger per exposure, and no triggers lost. Verified via the trigger log on 4 sessions;
-  checked indirectly on every session by the post-checks (a missing trigger leaves a 1-frame step
-  error the post-check catches).
-- The first saved row is the first exposure. If frames were lost before the first saved row, every
-  row is off by that constant. **The CSV cannot detect this**; the trigger log can (event count >
-  exposures). Record it as a known limitation.
-
-### Optional trigger-log validation (`triggers.py`)
-
-`read_trigger_log(path) -> ndarray` and `validate_against_triggers(timing, trigger_times) -> dict`:
-event count vs exposures; CSV row *n* == event *n*; after correction, max |corrected − log[k]|
-(expected: 0 for exact rows, ≤ ~0.1 ms for the tail). Used in tests and for one-off validation;
-never required by `correct_video_timing`.
-
-### Report (`report.py`)
-
-`QCReport` dataclass, one per camera, with `to_dict()` (JSON) and `to_row()` (flat, for a table):
-source path, layout, camera name (normalised `bottom_camera` / `side_camera_right` from either
-layout), rows, IFI, fps, class, frame gaps, frames dropped, first drop row and time, backward
-counts, clock flags on / off gaps, glitch rows (list), clock slip (frames, s), p99 and max
-|ΔHarp − ΔCamera|, transcode mismatch, correction applied / sources counts / post-check results,
-package version, threshold used.
-
-### Public API
+### Functions (`video_timing_qc.py`)
 
 ```python
 from aind_dynamic_foraging_behavior_video_analysis import video_timing_qc as vtq
 
-timing = vtq.load_video_timing("…/behavior-videos/bottom_camera.csv")
-report = vtq.check_video_timing(timing, threshold=0.5, video_frame_count=None)
-fixed, report = vtq.correct_video_timing(timing, report)          # opt-in
-
-reports = vtq.check_session("…/behavior_816212_2025-12-05_13-47-41")  # all cameras, both layouts
-vtq.frame_index_for_harp_time(event_times, fixed)                  # event -> video frame row
+timing = vtq.load_video_timing(csv_path)              # harp_time_raw, frame_number, camera_time (s)
+qc = vtq.check_video_timing(timing, threshold=0.5, video_frame_count=None)   # dict
+fixed = vtq.correct_video_timing(timing)              # + harp_time, harp_source; raises if untrusted
+fixed = vtq.correct_video_timing(timing, trigger_times=vtq.read_harp_trigger_log(log_path))
+table = vtq.check_session(behavior_videos_path)       # DataFrame, one row per camera
 ```
 
-`frame_index_for_harp_time` (searchsorted on corrected `harp_time`) is how consumers should map
-behavior events to video frames. See "Consequence for `video_alignment`".
+The correction itself is hardware-agnostic:
+
+```python
+times, source = vtq.correct_frame_times(frame_number, camera_time, trigger_times)
+```
+
+It takes plain arrays and knows nothing about CSV layouts or Harp. `correct_video_timing` is a thin
+wrapper that passes the CSV's Harp column (or the trigger log, after checking it matches the CSV)
+as `trigger_times` and adds the result as columns. Helpers, also public:
+`find_glitch_rows(trigger_times, ifi, threshold)`,
+`post_check_failures(times, camera_time, ifi, threshold)`.
+
+- `load_video_timing` reads either layout through `video_alignment.read_video_csv`, takes the
+  first three columns by position, checks a header (if any) is `ReferenceTime,
+  CameraFrameNumber, CameraFrameTime`, and converts camera time from ns to s (confirmed ns for
+  both layouts: median step 1.9995 ms). Raises on an empty file, unknown header, or NaNs.
+- `check_session` finds `*.csv` and `*/metadata.csv`; a CSV that fails to load gets class
+  `unreadable` and the error text.
+
+### Detection (`check_video_timing`)
+
+- **IFI**: `median(diff(camera_time))`. Never hard-coded.
+- **Frame continuity**: gaps where the frame step > 1 (frames dropped = exposures − rows);
+  order errors where it is ≤ 0.
+- **Backward steps** in Harp and camera time.
+- **Clock flags**: `|ΔHarp − ΔCamera| > threshold × IFI`, default 0.5 (2 reproduces the legacy
+  flags). Flags not explained by a gap or a glitch are `unexplained_rows`.
+- **Harp glitch rows**, from the Harp column alone: row *r* with
+  `|harp[r] − (harp[r−1] + harp[r+1]) / 2| > 0.5 × IFI` and
+  `|harp[r+1] − harp[r−1] − 2 × IFI| ≤ 0.5 × IFI`. Adjacent detections are discarded (a run of bad
+  rows is not a glitch). Frame numbers are deliberately not part of the rule: under
+  arrival-order pairing the Harp column is the trigger sequence, evenly spaced whether or not
+  frames were dropped, so this also finds glitches in drop sessions (a rule requiring frame steps
+  of 1 missed 1 of 4 in `behavior_816214_2025-12-02_08-28-39`).
+- **Clock slip**: `((cam[-1] − cam[0]) − (harp[-1] − harp[0])) / IFI` frames. Normal drift in `ok`
+  sessions is about −40…0 frames over ~90 min.
+- **Transcode mismatch**: only if the caller passes `video_frame_count`.
+
+`qc_class`, first match wins:
+
+| Class | Condition | `correct_video_timing` |
+|---|---|---|
+| `frame_order_error` | frame step ≤ 0, or camera time not increasing | raises |
+| `transcode_mismatch` | video frame count given and ≠ rows | (not checked there) |
+| `frame_drops` | any frame step > 1 | corrects |
+| `clock_disagreement` | unexplained clock flags or Harp backward steps | raises |
+| `harp_glitch` | glitch rows only | corrects |
+| `ok` | none of the above | returns Harp unchanged |
+
+A camera can carry both drops and glitches; it is classed `frame_drops` and both are corrected.
+
+### Correction (`correct_frame_times`)
+
+0. **Refuse** if frame numbers or camera times do not strictly increase. Other untrustworthy
+   timing (`clock_disagreement`, a lost trigger) is caught by the post-checks in step 4.
+1. **Glitch fix** on the trigger sequence (the CSV Harp column, or the trigger log if given):
+   `t[r] = (t[r−1] + t[r+1]) / 2`. Done first: re-indexing moves values to other rows, so an
+   unfixed glitch would land on the wrong row and fail the post-checks.
+2. **Re-index**: `k = frame_number − frame_number[0]` is each row's trigger index;
+   `harp_time[row] = t[k]` for every `k` the sequence covers.
+3. **Tail**: rows with `k ≥ rows` have no trigger in the CSV. Without a log, fit
+   `harp = a + b × camera_time` on the exact rows in the last `tail_fit_window_s` (600 s) and
+   predict. With a log, every row is read from it (`correct_video_timing` first checks that the
+   log covers every exposure and matches the CSV's Harp column to one 32 µs tick, else
+   `ValueError`).
+4. **Post-checks** (`post_check_failures`): corrected time strictly increasing; no step
+   disagreeing with camera time by more than `threshold × IFI`; residual from a linear fit on
+   camera time ≤ 1 ms. Any failure raises `ValueError`; a partially corrected result is never
+   returned.
+
+`source` per row: `original`, `reindexed`, `glitch_interpolated` or `estimated_camera_fit`;
+`correct_video_timing` stores it as `harp_source` and relabels rows read from a trigger log as
+`trigger_log`. Only Harp time is changed; camera time is never modified.
+
+Assumptions: one Harp trigger per exposure, no triggers lost (a lost trigger fails the
+post-checks), and the first saved row is the first exposure. The last one cannot be checked from
+the CSV; the trigger log's event count equalled the exposure count on all 6 sessions checked.
+
+### Integration (Phase 2)
+
+`integrate_keypoints_with_video_time(video_csv_path, keypoint_dfs, trigger_log_path=None)` now
+loads with `load_video_timing` (fixing the new-layout crash), runs `check_video_timing` and
+`correct_video_timing`, prints a one-line summary, and sets keypoint `time_raw` from `harp_time`.
+It returns the corrected timing frame in place of the old `Behav_Time`/`Frame`/`Camera_Time`
+frame. Untrustworthy sessions raise `ValueError`, which `run_batch_analysis` already logs per
+session and skips. `generate_tongue_dfs` and `run_batch_analysis` take `use_trigger_log=False`;
+when True, the session's `Event_94.bin` is found under the session folder and passed through.
+`generate_tongue_dfs` also now raises `FileNotFoundError` when no video CSV is found (it used to
+fail with `AttributeError` on `None.exists()`).
 
 ## Consequence for `video_alignment`
 
@@ -356,38 +303,47 @@ one IFI across each drop, but the file has no frame there.
 
 So:
 
-- Don't change `video_alignment`'s functions. Document the caveat in their docstrings.
+- Don't change `video_alignment`'s functions. The caveat is in the module docstring.
 - New code that maps behavior events to video frames (the `video_clips.py` plan, which already
-  chooses the frame index first) should use `frame_index_for_harp_time` on corrected timing, then
-  convert frame index to file position (`index / fps` for a CFR file).
+  chooses the frame index first) should `searchsorted` the event times into corrected
+  `harp_time`, then convert frame index to file position (`index / fps` for a CFR file). A helper
+  for this (`frame_index_for_harp_time`) is deferred to Phase 4.
 
 ## Consumers
 
 | Consumer | Where | Today | With this package |
 |---|---|---|---|
-| Lightning Pose tongue kinematics | `kinematics/tongue_analysis.py::generate_tongue_dfs` → `integrate_keypoints_with_video_time` | Uses `Behav_Time` after the 2× fix as keypoint `time_raw`. Drop sessions pass silently with shifted times; drops of ≥ 2 frames get camera times overwritten. | Opt-in path: check + correct, keypoint time from corrected `harp_time`, save `QCReport` next to the session outputs and into the batch summary; skip or mark sessions that fail. |
+| Lightning Pose tongue kinematics | `kinematics/tongue_analysis.py::generate_tongue_dfs` → `integrate_keypoints_with_video_time` | Uses `Behav_Time` after the 2× fix as keypoint `time_raw`. Drop sessions pass silently with shifted times; drops of ≥ 2 frames get camera times overwritten. | **Done (Phase 2).** Check + correct; keypoint `time_raw` from corrected `harp_time`; untrusted sessions raise and are skipped by the batch. Optional trigger-log mode. |
 | Motion-energy table | `kinematics_analysis/code/fip_me_aligned_table_plan.md` (branch `fip-motion-energy`) | Planned | Store corrected `harp_time`, `harp_source`, QC class per row / camera; ME is row-aligned with the CSV, so no other change. |
 | FIP motion energy in analysis | `kinematics_analysis/code/fip_utils.py::motion_energy_to_session` | Reads CSV via `read_video_csv`, Harp time via `TIME_COLUMN_ALIASES` | Read the ME table's corrected time instead. |
-| Video clips | `VIDEO_CLIPS_MIGRATION_PLAN.md` | Planned | Event → frame via `frame_index_for_harp_time`. |
+| Video clips | `VIDEO_CLIPS_MIGRATION_PLAN.md` | Planned | Event → frame by `searchsorted` on corrected `harp_time`. |
 | BEAST latents | `aind-BEAST-train-test/code/analyze_latents.ipynb` | `compute_video_session_offset`, `session_time_to_video_time` | Same as clips for drop sessions. |
-| Notebooks | `kinematics_analysis/code/{model_quality,test_session_wrapper}.ipynb` call `integrate_keypoints_with_video_time`; `val_03`, `val_04` use `session_time_to_video_time` | Unchanged | Unchanged until migrated. |
+| Notebooks | `kinematics_analysis/code/{model_quality,test_session_wrapper}.ipynb` call `integrate_keypoints_with_video_time`; `val_03`, `val_04` use `session_time_to_video_time` | Unchanged | `integrate_keypoints_with_video_time` callers get corrected times (and a changed returned CSV frame) once they move their pin. |
 
-## Rollout without breaking anything
+## Rollout
 
-1. **Phase 1: new subpackage only.** No edits to existing modules. Ship with tests. Safe by
-   construction: nothing imports it yet.
-2. **Phase 2: opt-in in the LP path.** Add a keyword to `integrate_keypoints_with_video_time`,
-   e.g. `timing_qc="legacy"` (default, today's exact behavior) or `"strict"` (new package; raises
-   or returns the report for sessions it can't trust). Same for `generate_tongue_dfs` /
-   `run_batch_analysis`. Legacy output must stay identical; add a regression test that pins
-   today's output on a fixture.
-3. **Phase 3: reference comparison, then flip the default.** Run the LP batch in both modes on a
-   set covering `ok`, `harp_glitch`, `frame_drops`, and new-layout sessions. Expect identical
-   times for `ok`; changes only on glitch rows (µs to ~1 s) and drop sessions (up to minutes).
-   Record the comparison in this plan, then make `"strict"` the default in a minor release with a
-   changelog note. Keep `"legacy"` for one release.
-4. **Phase 4: migrate other consumers** (ME table, clips, BEAST) to `frame_index_for_harp_time`
-   and the corrected time.
+1. **Phase 1 (done): new module.** `video_timing_qc.py` + synthetic tests; validated on real data
+   (below).
+2. **Phase 2 (done): replace the old QC in the LP path.** `integrate_keypoints_with_video_time`
+   uses the new module; the old `check_frame_monotonicity` / `qc_and_fix_timing` are removed
+   (no legacy mode). Comparison against the old function on real sessions:
+
+   | Session | Class | Keypoint `time_raw`, new vs old |
+   |---|---|---|
+   | `behavior_800886_2025-09-03_13-03-45` | ok | identical |
+   | `behavior_809491_2025-10-02_09-23-46` | harp_glitch | 1 row differs by 8 µs (row 183625, which the old fix nudged; both fix 183624 identically) |
+   | `behavior_816212_2025-12-05_13-47-41` | frame_drops | 2,746,049 rows differ, up to 374 s |
+   | `behavior_818586_2026-01-21_09-43-54` | harp_glitch, new layout | old function crashes (`TypeError` on the header row); new works |
+
+3. **Phase 3: re-run the LP batch** on a set covering ok, glitch, drop and new-layout sessions,
+   once with `main` and once with this branch (`extract_clips=False`), and diff the outputs with
+   `python scripts/compare_batch_outputs.py out_old out_new`. It reports, per session and
+   intermediate parquet, `identical` or which columns changed and by how much. Expect ok sessions
+   identical, glitch sessions to differ only slightly in time columns, drop sessions to differ in
+   time and in everything matched by time (trials, licks), and new-layout sessions to appear
+   only in the new run. Then release (minor version, changelog note: `time_raw` changes for drop
+   and glitch sessions; the returned video frame has new column names).
+4. **Phase 4: migrate other consumers** (ME table, clips, BEAST) to the corrected time.
 
 Consumers pin this library by SHA or tag (see `PYTHON_311_UPGRADE_PLAN.md`), so none of them
 changes until it moves its pin.
@@ -410,53 +366,62 @@ same CSV rows in both cameras):
 
 ## Tests
 
-`unittest`, as the rest of the repo (CI runs `coverage run -m unittest discover` and
-`flake8 --select=E9,F63,F7,F82`; black line length 79).
+`tests/test_video_timing_qc.py` (`unittest`, in CI). CSVs are simulated with arrival-order pairing
+(the camera exposes and numbers every frame, some exposures are not saved, row *n* gets trigger
+*n*), on the 32 µs Harp tick grid, with 15 ppm camera drift and jitter:
 
-Synthetic (fast, in CI): build CSVs by simulating arrival-order pairing (camera exposes every
-frame; drop a set of exposures; row *n* gets trigger *n*):
+- clean; glitch (−983 ms; +3 ms); two consecutive bad rows (refused);
+- drops of 1, 2, 3, 5 frames (exact re-indexing, tail within 0.1 ms, legacy threshold misses
+  drops); a drop every 8 frames; glitch after a 2-frame drop and on a dropped exposure;
+- lost trigger in a drop session (post-check refuses); repeated frame number; video frame count
+  mismatch; unknown header; both layouts load identically; `check_session` on a mixed folder;
+- trigger log: write and read `Event_94.bin`, exact correction including the tail, refusal for a
+  log that does not match or is too short;
+- `integrate_keypoints_with_video_time` on both layouts with drops, and refusal of untrusted
+  timing.
 
-- clean; glitch (one row −983 ms; one row +3 ms); consecutive bad rows (not a glitch);
-- glitch next to a drop (row after a 2-frame drop), and glitch on a trigger whose frame was dropped;
-- drops of 1, 2, 3, 5 frames; drops starting at row 0 vs later; many drops (tail estimate);
-- both layouts (header / headerless), extra columns, nanosecond camera time;
-- frame repeats / backward steps; video frame count mismatch;
-- post-check failure (inject a lost trigger) → `correction_failed`, no corrected column;
-- threshold 2 reproduces the legacy flags on the same inputs.
+No real-data fixtures are committed. `examples/video_timing_qc_validation.ipynb` (executed, with
+outputs) shows the check and correction on an ok, a glitch, and a drops + glitch session against
+the trigger log, with figures of the glitch and of Harp − camera time across a drop session. It
+downloads what it needs. More sessions were checked by hand (CSVs and trigger logs
+from `s3://aind-open-data`, public over HTTPS), both correction modes, against the trigger log:
 
-Real-data fixtures (small, committed): 50,000-row slices of the three cases, with expected counts
-from the findings above. Full-session checks against S3 are optional and skipped without network:
+| Session | Camera(s) | Class | Rows | Drops | Glitch rows | Tail rows | Re-indexed vs log | Tail vs log |
+|---|---|---|---|---|---|---|---|---|
+| `behavior_800886_2025-09-03_13-03-45` | bottom, side | ok | 2,672,569 | 0 | — | 0 | 0 | — |
+| `behavior_809491_2025-10-02_09-23-46` | bottom, side | harp_glitch | 2,566,316 | 0 | 183624 | 0 | 0 | — |
+| `behavior_816212_2025-12-05_13-47-41` | bottom | frame_drops | 2,748,281 | 187,024 | — | 175,161 | 0 µs | ≤ 0.062 ms |
+| | side | frame_drops | 2,749,302 | 186,003 | — | 174,194 | 0 µs | ≤ 0.065 ms |
+| `behavior_816214_2025-12-02_08-28-39` | bottom | frame_drops | 2,492,931 | 172,631 | 554395, 1357400 | 161,410 | 0 µs | ≤ 0.058 ms |
+| | side | frame_drops | 2,498,774 | 166,788 | 554395, 1357400 | 156,359 | 0 µs | ≤ 0.059 ms |
+| `behavior_818586_2026-01-21_09-43-54` (new layout) | Bottom, SideRight | harp_glitch | 2,517,841 | 0 | 1282502 | 0 | 0 | — |
+| `ecephys_786867_2025-09-25_12-43-56` | bottom | frame_drops | 2,520,209 | 46,723 (32,237 gaps) | — | 46,723 | 0 µs | ≤ 0.053 ms |
+| | side left | frame_drops | 2,523,521 | 43,411 (30,503 gaps) | — | 43,411 | 0 µs | ≤ 0.059 ms |
+| | side right | frame_drops | 2,526,738 | 40,194 (28,900 gaps) | — | 40,194 | 0 µs | ≤ 0.046 ms |
 
-| Session | Case | Expected (bottom camera) |
-|---|---|---|
-| `behavior_800886_2025-09-03_13-03-45` | ok, flat | 2,672,569 rows, 0 gaps, 0 flags |
-| `behavior_809491_2025-10-02_09-23-46` | harp_glitch | glitch row 183624 (−981.024 ms step), 0 gaps |
-| `behavior_816212_2025-12-05_13-47-41` | frame_drops | 2,748,281 rows, 187,024 gaps, 2,935,305 exposures, tail 175,161 rows |
-| `behavior_818586_2026-01-21_09-43-54` | harp_glitch, new layout | 2,517,841 rows, 2 flags |
-| `behavior_816214_2025-12-02_08-28-39` | frame_drops + harp_glitch | 2,492,931 rows, 172,631 gaps, glitch rows 554395 and 1357400 |
-| `ecephys_786867_2025-09-25_12-43-56` | extreme drops, 3 cameras | 40–47k drops per camera (colleague's numbers; not yet checked here) |
+No unexplained clock flags in any camera; every correction passed its post-checks. The ecephys
+session has multi-frame drops, unlike the FIP sessions; Harp ended 80–93 s early, matching the
+colleague's numbers.
 
 ## Phases
 
-| Phase | Deliverable |
-|---|---|
-| 1 | `video_timing_qc` (io, checks, report, correct, triggers) + synthetic and fixture tests |
-| 2 | Opt-in in `integrate_keypoints_with_video_time` / `tongue_analysis`, legacy regression test |
-| 3 | LP batch comparison, flip default, release |
-| 4 | ME table, clips, BEAST migrated |
+| Phase | Deliverable | Status |
+|---|---|---|
+| 1 | `video_timing_qc` + synthetic tests + real-data validation | done |
+| 2 | Replace QC in `integrate_keypoints_with_video_time`, trigger-log option in `tongue_analysis` | done |
+| 3 | LP batch re-run on affected sessions, release | |
+| 4 | ME table, clips, BEAST migrated | |
 
 ## Open questions
 
-1. Confirm register 94 is the camera-trigger event (Harp Behavior register map / rig owners).
+1. ~~Confirm register 94 is the camera-trigger event.~~ Yes: `Camera1Frame` in the Harp Behavior
+   `device.yml`.
 2. Whether any workflow version logs triggers differently (older rigs, `Aind.Behavior.JustFrames`).
-3. Can frames be lost before the first saved row? Check the trigger log (event count vs
-   exposures) across all 97 sessions once, and add it as an optional check.
-4. Default action for `frame_drops` in consumers: correct, or exclude? This plan corrects only on
-   request; consumers decide.
-5. Whether to also offer a trigger-log-based correction (exact tail) as an alternative when the log
-   is available.
-6. Whether this should become its own repository later. Keeping it dependency-free and independent
-   of the kinematics code makes that a move, not a rewrite.
+3. Can frames be lost before the first saved row? Trigger-log event count equalled exposures on
+   all 6 sessions checked; check across all 97 once.
+4. Default action for `frame_drops` in consumers other than LP: correct, or exclude?
+5. Whether this should become its own repository later. It depends only on `video_alignment`,
+   numpy and pandas, so that would be a move, not a rewrite.
 
 ## Out of scope
 

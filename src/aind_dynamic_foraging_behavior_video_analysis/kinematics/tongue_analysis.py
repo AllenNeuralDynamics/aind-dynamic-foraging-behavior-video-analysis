@@ -115,7 +115,8 @@ def run_batch_analysis(
     save_root, 
     percentiles=None, 
     extract_clips=True,
-    force_rerun=False  
+    force_rerun=False,
+    use_trigger_log=False
 ):
     """
     Run analysis for multiple sessions in batch.
@@ -132,6 +133,11 @@ def run_batch_analysis(
         Percentiles for movement quality plots (default: [0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0]).
     extract_clips : bool, optional
         Whether to extract example video clips for each session (default: True).
+    force_rerun : bool, optional
+        Re-run sessions whose analysis is already complete (default: False).
+    use_trigger_log : bool, optional
+        Take video Harp times from the camera trigger log instead of the
+        video CSV; see ``generate_tongue_dfs`` (default: False).
     """
     percentiles = percentiles or [0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0]
     save_root = Path(save_root)
@@ -154,7 +160,9 @@ def run_batch_analysis(
         print(f"\n🔹 Starting analysis for: {session_id}")
         try:
             # ---- 1) Generate DFs ----
-            nwb, tongue_kins, tongue_movs, kps_raw, tongue_trials = generate_tongue_dfs(pred_csv, data_root)
+            nwb, tongue_kins, tongue_movs, kps_raw, tongue_trials = generate_tongue_dfs(
+                pred_csv, data_root, use_trigger_log=use_trigger_log
+            )
 
             # ---- 1a) Save intermediate data ----
             intermediate_folder = session_save_dir / "intermediate_data"
@@ -375,7 +383,8 @@ def analyze_tongue_movement_quality(
     print(f"✅ Finished analysis for {session_id}. Results saved to {save_dir}")
 
 
-def generate_tongue_dfs(predictions_csv_path: Path, data_root: Path, tolerance=0.01):
+def generate_tongue_dfs(predictions_csv_path: Path, data_root: Path, tolerance=0.01,
+                        use_trigger_log=False):
     """
     Run the end-to-end pipeline for a single session and return:
       - the NWB object (with licks/trials annotated),
@@ -392,6 +401,11 @@ def generate_tongue_dfs(predictions_csv_path: Path, data_root: Path, tolerance=0
         Root directory containing session subfolders named like 'behavior_<...>'.
     tolerance : float, optional
         Max absolute time difference (seconds) when matching licks to kinematics (default 0.01).
+    use_trigger_log : bool, optional
+        If True, video Harp times come from the session's camera trigger log
+        (``behavior/raw.harp/BehaviorEvents/Event_94.bin``) rather than being
+        estimated from camera time where the video CSV is missing them
+        (default False). See ``video_timing_qc.correct_video_timing``.
 
     Returns
     -------
@@ -423,12 +437,23 @@ def generate_tongue_dfs(predictions_csv_path: Path, data_root: Path, tolerance=0
     if videos_folder is None:
         raise FileNotFoundError(f"Videos folder not found for session {session_id}")
     video_csv = find_video_csv_path(videos_folder)
-    if not video_csv.exists():
-        raise FileNotFoundError(f"Expected video CSV at {video_csv}")
+    if video_csv is None:
+        raise FileNotFoundError(f"No video CSV found in {videos_folder}")
     print(f"Found video CSV: {video_csv}")
+    trigger_log = None
+    if use_trigger_log:
+        logs = sorted(
+            (Path(data_root) / session_id).rglob("raw.harp/BehaviorEvents/Event_94.bin")
+        )
+        if not logs:
+            raise FileNotFoundError(f"No camera trigger log (Event_94.bin) for {session_id}")
+        trigger_log = logs[0]
+        print(f"Using camera trigger log: {trigger_log}")
 
-    # --- 4) Synchronize keypoints to video timestamps ---
-    kps_trim, _ = integrate_keypoints_with_video_time(str(video_csv), kps)
+    # --- 4) QC video timing and synchronize keypoints to it ---
+    kps_trim, _ = integrate_keypoints_with_video_time(
+        str(video_csv), kps, trigger_log_path=trigger_log
+    )
     print(f"Synced keypoints")
 
     # --- 5) Mask, filter, and segment tongue movements ---
