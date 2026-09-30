@@ -1,8 +1,10 @@
 # Plan: `video_quality_qc` — image-quality QC of behavior videos
 
-> Status: revision 4 (2026-09-30). Phase 1 implemented (`video_quality_qc`,
-> `video_quality_report`, tests, `examples/video_quality_qc_validation.ipynb`); Phases 2–4 not
-> started. Revision 2 recorded the decisions on revision 1's open questions (see "Decisions").
+> Status: revision 5 (2026-09-30). Phase 1 implemented (`video_quality_qc`,
+> `video_quality_report`, tests, `examples/video_quality_qc_validation.ipynb`). Phase 2's first
+> survey (97 FIP sessions, 194 cameras) done; see "Findings: Phase 2 survey". Calibration of
+> level thresholds is blocked on bad examples (none found) and on whole-frame sharpness tracking
+> the scene; Phases 3–4 not started. Revision 2 recorded the decisions on revision 1's open questions (see "Decisions").
 > Revision 3 recorded what the first real session changed (see "Findings: first real session"):
 > `view_stable` is dropped (a lick-spout move reads as a camera shift), `similarity` is a plain
 > correlation, clipping is counted at the tagged range, luma is read from the coded plane.
@@ -159,6 +161,68 @@ the left strip holds the mouse, so their estimates are noise (`edges_shifted` 1�
 samples with no bump), and the one confident strip is the one the spouts cross. Gating on peak
 height does not help there: a correctly recovered bump also has peaks 0.06–0.2 on those strips.
 The survey should read the side camera's strips first.
+
+## Findings: Phase 2 survey (revision 5)
+
+97 FIP sessions (`kinematics_analysis/metadata/me_sessions_fip_curated.csv`, rows with
+`used_in_fip05_07`), both cameras, 100 keyframes over the task window, read over HTTPS with
+`scripts/video_quality_survey.py` (8 processes, ~30 min; ~60 s per camera including the CSV
+download). Outputs in `video_quality_qc_data/survey_fip97/` (gitignored): `summary.csv`,
+per-camera JSON/parquet/card, `video_quality_survey.pdf`.
+
+**Result: all 194 cameras `use`.** No session in this population has an image-quality problem
+the checks can see, so there are still no bad examples to calibrate against.
+
+**Task window: 194 of 194.** 178 from the corrected timing; 12 from the raw Harp column (timing
+refused, no frames lost); 4 from the trigger log by frame number (frames lost and timing
+refused: two logs one event longer than the frame numbers span, one session with two bad Harp
+steps). Both fallbacks were added during the survey: before them those cameras sampled the
+whole file, and **all 4 first-run exclusions were these whole-file cameras failing on the
+post-session tail** (empty rig from ~77–81 min). The correction stays strict for per-frame
+analysis; the window only needs to be right to a few frames.
+
+**Operational.** A worker hung for 10 minutes on a stalled HTTPS read (fixed: 60 s
+`rw_timeout` with reconnect for URLs, 120 s socket timeout for downloads). Two side cameras
+raised `InvalidDataError` mid-decode on the first run and passed on re-run (transient).
+
+**Stability margins** (passing cameras, over the task; tolerances unchanged):
+
+| | bottom (97) | side (97) | tolerance |
+|---|---|---|---|
+| max \|sharpness / median − 1\| per camera, p95 (max) | 0.33 (0.40) | 0.20 (0.24) | 0.30 |
+| same, 95th percentile of samples, max over cameras | 0.31 | 0.17 | |
+| max \|mean / median − 1\|, p95 (max) | 0.05 (0.13) | 0.06 (0.06) | 0.15 |
+| min similarity, p5 (min) | 0.85 (0.80) | 0.81 (0.78) | 0.80 |
+
+No camera had two consecutive samples out of tolerance, so the tolerances cause no false
+exclusions here. They are close to natural variation in two places: 9 of 97 bottom cameras
+have an isolated sample beyond 30% sharpness (the mouse's face and tongue move), and a few side
+cameras dip below 0.8 similarity on single samples. The empty-rig tail (positive control)
+sits far outside: sharpness 0.40–0.94 off the median, brightness 0.45–0.60, similarity
+0.04–0.27. **Recommendation, not applied:** keep brightness at 0.15; loosen the bottom
+camera's sharpness tolerance to ~0.45 and the similarity floor to ~0.7 if Phase 3 shows
+false exclusions; both still catch the empty rig.
+
+**Level thresholds: not set.** Whole-frame levels differ by subject and rig more than any
+plausible failure would move them. Bottom-camera median sharpness per subject ranges 88–260
+among healthy sessions. Subject 818586's bottom camera dropped from ~210 to ~85 between
+2026-01-02 and 2026-01-05 and stayed there; frames on both sides show the mouse, whiskers and
+spouts equally sharp, but a bright, finely dotted background replaced by a dark smooth one.
+Whole-frame Laplacian variance tracks that background, not focus. An absolute sharpness
+threshold would need an ROI on the mouse, or a per-subject baseline (a step against the
+subject's own previous sessions). Side-camera clipping at 235 is 1.5–5.7% everywhere (bright
+rig parts), so `max_pct_clipped` also needs a rig-aware value. Folder layouts name the same
+camera differently (`bottom_camera` vs `BottomCamera`), so thresholds need a camera alias.
+
+**Camera shift: it happens, rarely.** One clear case in 97 side cameras:
+`behavior_818585_2025-12-22_13-10-50`, where at 58.5 min all four border strips and the whole
+frame shift by +3.1 to +4.0 px in x and stay there (the rig's vertical edges double in an
+overlay of the samples before and after). Similarity barely moves (0.85–0.9), so no current
+check sees it. No other side camera has two samples with all four strips moved. Bottom
+cameras show many 3-strip samples (noise from dark or mouse-filled strips, and spout moves,
+as expected) and no clear case. Whether 3–4 px matters depends on the consumer (keypoint
+models trained on a fixed view); a side-camera check (all four strips > 2 px on ≥ 2
+consecutive samples) would catch this case with no false positives in this survey.
 
 ## Background: the MP4
 
@@ -401,8 +465,9 @@ a few hundred frames) from a textured pattern with a moving blob. Cases:
    ~10 s. Validate on
    public sessions (e.g. `behavior_816212_2025-12-05_13-47-41`, both cameras) in an executed
    example notebook (`examples/video_quality_qc_validation.ipynb`).
-2. **Population survey and calibration.** Run on every attached LP session and the FIP population
-   (97 sessions × 2 cameras, from the timing plan), over the task window. Look for step changes
+2. **Population survey and calibration (FIP survey done, revision 5).** Run on every attached
+   LP session and the FIP population (97 sessions × 2 cameras, from the timing plan), over the
+   task window. Look for step changes
    in the border-strip shifts (side camera first) to learn whether cameras ever move. Scroll the batch PDF, collect the bad
    sessions found, set stability tolerances and level thresholds per camera from the
    distributions, and record the evidence here. Decide from the data whether the dense keyframe
@@ -415,11 +480,16 @@ a few hundred frames) from a textured pattern with a moving blob. Cases:
 
 ## Open questions
 
-- **View shift.** Do cameras ever move? The Phase 2 survey of the border-strip shifts answers
-  it; only then is a check worth designing (the bottom camera would need a mask of fixed rig
-  structure, since its borders are dark, hold the mouse, or cross the spouts).
-- Stability tolerances and the similarity floor are first guesses; Phase 2 sets them.
-- Whether level thresholds can be shared across rigs for a camera, or need a rig key too.
+- **View shift.** Cameras do move (one 3–4 px case in 97 side cameras). Add a side-camera
+  check (all four strips agree, sustained)? Does a 3–4 px shift matter to the consumers?
+- **Level thresholds.** Whole-frame levels track the scene (818586's background change halved
+  sharpness with no loss of focus). Options: an ROI on the mouse, per-subject baselines
+  (flag a step against the subject's own sessions), or no level checks until a real bad
+  session turns up.
+- **More sessions.** No bad examples in 97 FIP sessions. Survey the 301 in the curated list
+  (or the LP sessions) to find some before calibrating further?
+- Stability tolerances: no false exclusions at the current values; loosen only if Phase 3
+  finds some (see revision 5 margins).
 
 ## Out of scope
 

@@ -72,6 +72,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import warnings
 from dataclasses import asdict, dataclass, fields
 from fractions import Fraction
 from pathlib import Path
@@ -537,6 +538,21 @@ def luma_plane(frame: av.VideoFrame) -> LumaFrame:
     return rows[: frame.height, : frame.width].copy()
 
 
+# FFmpeg options for http(s) inputs: give up on a stalled read after
+# 60 s (microseconds) instead of hanging, and reconnect on drops.
+HTTP_OPTIONS = {
+    "rw_timeout": "60000000",
+    "reconnect": "1",
+    "reconnect_on_network_error": "1",
+}
+
+
+def _open_options(video_path) -> dict[str, str]:
+    """FFmpeg input options: timeouts for URLs, none for files."""
+    is_url = str(video_path).startswith(("http://", "https://"))
+    return dict(HTTP_OPTIONS) if is_url else {}
+
+
 def read_keyframes(
     video_path: str | Path,
     index: Mp4FrameIndex,
@@ -564,7 +580,9 @@ def read_keyframes(
         )
     media_pts = _presentation_pts(index)
     frames = []
-    with av.open(str(video_path)) as container:
+    with av.open(
+        str(video_path), options=_open_options(video_path)
+    ) as container:
         stream = container.streams.video[0]
         to_stream = Fraction(1, index.media_timescale) / stream.time_base
         for frame_index in np.asarray(frame_indices, dtype=np.int64):
@@ -965,6 +983,10 @@ def write_video_quality(
 # --- Whole session -------------------------------------------------------
 
 
+class RawHarpWindowWarning(UserWarning):
+    """The task window came from the raw Harp column (timing refused)."""
+
+
 def task_frame_window(
     behavior_json, video_csv, trigger_log=None
 ) -> tuple[int, int]:
@@ -991,18 +1013,45 @@ def task_frame_window(
     (start, end)
         ``[start, end)`` video frame indices (= CSV rows).
 
+    The window only needs to be right to a few frames, so when the timing
+    correction refuses the CSV (it is strict because it serves per-frame
+    analysis) there are two fallbacks, each with a
+    :class:`RawHarpWindowWarning`:
+
+    - no frames lost: row ``n`` is trigger ``n``, so the raw Harp column
+      is used (running maximum, so a glitch cannot reorder it);
+    - frames lost, trigger log given: each row takes the log time of its
+      exposure, ``log[frame_number - first_frame_number]`` (running
+      maximum). A log off by one event moves the window by one frame.
+
+    The trial times are on the same Harp clock, so a clock step moves both
+    together.
+
     Raises
     ------
     ValueError
         If the JSON has no Harp trial times, or the timing correction
-        refuses the CSV.
+        refuses a CSV that lost frames and no trigger log is given.
     """
     trials = read_trial_times(behavior_json)
     timing = vtq.load_video_timing(video_csv)
     triggers = vtq.read_harp_trigger_log(trigger_log) if trigger_log else None
-    harp_time = vtq.correct_video_timing(timing, trigger_times=triggers)[
-        "harp_time"
-    ]
+    try:
+        harp_time = vtq.correct_video_timing(timing, trigger_times=triggers)[
+            "harp_time"
+        ]
+    except ValueError as e:
+        checks = vtq.check_video_timing(timing).set_index("check")
+        if checks.loc["no_frames_lost", "passed"] is True:
+            source, harp = "raw Harp", timing["harp_time_raw"].to_numpy()
+        elif triggers is not None:
+            exposure = timing["frame_number"].to_numpy()
+            exposure = np.clip(exposure - exposure[0], 0, len(triggers) - 1)
+            source, harp = "trigger log by frame number", triggers[exposure]
+        else:
+            raise
+        warnings.warn(f"{source} ({e})", RawHarpWindowWarning, stacklevel=2)
+        harp_time = np.maximum.accumulate(harp)
     start = behavior_time_to_frame_index(trials["start_time"].min(), harp_time)
     end = behavior_time_to_frame_index(trials["stop_time"].max(), harp_time)
     return int(start), int(end)
@@ -1035,19 +1084,33 @@ def find_behavior_json(session_folder) -> Path | None:
     return matches[0] if matches else None
 
 
-def _session_window(session_folder, video_csv, trigger_log):
-    """``(frame_window, note)`` for one camera: the task, or the whole file
-    with the reason when the task cannot be found."""
-    behavior_json = find_behavior_json(session_folder)
+def task_window_or_whole_file(behavior_json, video_csv, trigger_log=None):
+    """``(frame_window, note)``: the task from :func:`task_frame_window`,
+    or ``None`` (the whole file) with the reason.
+
+    ``note`` is ``"task"``; ``"task from raw Harp (...)"`` or ``"task from
+    trigger log by frame number (...)"`` when the timing correction was
+    refused (see :func:`task_frame_window`); or ``"whole file: <reason>"``.
+    """
     if behavior_json is None:
         return None, "whole file: no behavior JSON"
-    if not Path(video_csv).exists():
+    if video_csv is None or not Path(video_csv).exists():
         return None, "whole file: no video CSV"
-    try:
-        window = task_frame_window(behavior_json, video_csv, trigger_log)
-    except ValueError as e:
-        return None, f"whole file: {e}"
-    return window, "task"
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", RawHarpWindowWarning)
+        try:
+            window = task_frame_window(behavior_json, video_csv, trigger_log)
+        except ValueError as e:
+            return None, f"whole file: {e}"
+    raw = [w for w in caught if issubclass(w.category, RawHarpWindowWarning)]
+    return window, f"task from {raw[0].message}" if raw else "task"
+
+
+def _session_window(session_folder, video_csv, trigger_log):
+    """:func:`task_window_or_whole_file` for a local session folder."""
+    return task_window_or_whole_file(
+        find_behavior_json(session_folder), video_csv, trigger_log
+    )
 
 
 def check_session(

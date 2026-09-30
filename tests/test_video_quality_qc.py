@@ -97,14 +97,25 @@ def write_mp4(path, n_frames=300, fault=None, container_format=None):
     return Path(path)
 
 
-def write_video_csv(path, n_frames=300):
-    """New/AIND layout CSV: one row per frame, no drops."""
+def write_video_csv(path, n_frames=300, harp_step_at=None, drop_at=None):
+    """New/AIND layout CSV, one row per saved frame.
+
+    ``harp_step_at``: Harp jumps 0.5 s from that row on (a clock step).
+    ``drop_at``: the exposure at that row was lost (frame number and camera
+    time skip one frame; Harp stays in arrival order).
+    """
     i = np.arange(n_frames)
+    exposure = i if drop_at is None else i + (i >= drop_at)
+    harp = FIRST_HARP + i / FPS
+    if harp_step_at is not None:
+        harp = harp + 0.5 * (i >= harp_step_at)
     pd.DataFrame(
         {
-            "ReferenceTime": FIRST_HARP + i / FPS,
-            "CameraFrameNumber": 5000 + i,
-            "CameraFrameTime": (7_000_000_000 + i * 1e9 / FPS).astype("int64"),
+            "ReferenceTime": harp,
+            "CameraFrameNumber": 5000 + exposure,
+            "CameraFrameTime": (7_000_000_000 + exposure * 1e9 / FPS).astype(
+                "int64"
+            ),
         }
     ).to_csv(path, index=False)
     return Path(path)
@@ -304,6 +315,11 @@ class SamplingTest(TempDirTest):
         expected = _frame(10, _texture())
         self.assertAlmostEqual(luma.mean(), expected.mean(), delta=0.5)
         self.assertAlmostEqual(luma.min(), expected.min(), delta=4)
+
+    def test_open_options(self):
+        """Timeouts for URLs only."""
+        self.assertIn("rw_timeout", vqq._open_options("https://x/v.mp4"))
+        self.assertEqual(vqq._open_options(self.path), {})
 
     def test_luma_plane_refuses_other_formats(self):
         """RGB frames have no luma plane."""
@@ -643,6 +659,51 @@ class TaskWindowTest(TempDirTest):
         np.testing.assert_array_equal(
             behavior_time_to_frame_index([10.0, 10.2, 12.0], harp), [0, 1, 3]
         )
+
+    def test_refused_timing_without_drops_uses_raw_harp(self):
+        """A Harp clock step is refused by the correction, but with no
+        frames lost the raw column still places the task."""
+        csv = write_video_csv(self.tmp / "step.csv", 300, harp_step_at=280)
+        path = write_behavior_json(self.tmp / "d" / "s.json", 40, 260)
+        with self.assertWarns(vqq.RawHarpWindowWarning):
+            self.assertEqual(vqq.task_frame_window(path, csv), (40, 260))
+        window, note = vqq.task_window_or_whole_file(path, csv)
+        self.assertEqual(window, (40, 260))
+        self.assertTrue(note.startswith("task from raw Harp"))
+        self.assertEqual(
+            vqq.task_window_or_whole_file(path, csv.with_name("none.csv")),
+            (None, "whole file: no video CSV"),
+        )
+
+    def test_refused_timing_with_drops_is_whole_file(self):
+        """Lost frames and a refused correction: no window."""
+        csv = write_video_csv(
+            self.tmp / "both.csv", 300, harp_step_at=280, drop_at=100
+        )
+        path = write_behavior_json(self.tmp / "e" / "s.json", 40, 260)
+        with self.assertRaises(ValueError):
+            vqq.task_frame_window(path, csv)
+        window, note = vqq.task_window_or_whole_file(path, csv)
+        self.assertIsNone(window)
+        self.assertTrue(note.startswith("whole file: "))
+
+    def test_refused_timing_with_drops_uses_trigger_log(self):
+        """Lost frames, refused correction, trigger log: each row takes
+        its exposure's log time. The drop at row 100 moves later rows one
+        frame earlier than exposure time."""
+        csv = write_video_csv(
+            self.tmp / "both2.csv", 300, harp_step_at=280, drop_at=100
+        )
+        triggers = FIRST_HARP + np.arange(301) / FPS
+        triggers[281:] += 0.5  # the same clock step, in the log
+        log = self.tmp / "Event_94_step.bin"
+        write_trigger_log(log, triggers)
+        path = write_behavior_json(self.tmp / "f" / "s.json", 40, 260)
+        with self.assertWarns(vqq.RawHarpWindowWarning):
+            window = vqq.task_frame_window(path, csv, log)
+        self.assertEqual(window, (40, 259))
+        window, note = vqq.task_window_or_whole_file(path, csv, log)
+        self.assertTrue(note.startswith("task from trigger log by frame"))
 
     def test_task_frame_window(self):
         """CSV alone and with the trigger log agree."""

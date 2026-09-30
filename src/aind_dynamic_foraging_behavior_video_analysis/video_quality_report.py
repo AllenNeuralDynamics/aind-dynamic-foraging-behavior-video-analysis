@@ -122,7 +122,7 @@ def _header(fig, qc, checks, label) -> None:
         0.975,
         f"{label}    {s.codec} {s.pix_fmt} {s.color_transfer or ''} "
         f"{s.color_range}   {s.width}×{s.height}   "
-        f"{(s.fps or 0):.0f} Hz   {s.n_samples} keyframes, {window}",
+        f"{(s.fps or 0):.0f} Hz",
         fontsize=10,
         color="#0b0b0b",
         va="top",
@@ -135,6 +135,15 @@ def _header(fig, qc, checks, label) -> None:
         weight="bold",
         color=PASS if action == "use" else FAIL,
         va="top",
+    )
+    fig.text(
+        0.99,
+        0.945,
+        f"{s.n_samples} keyframes, {window}",
+        fontsize=8,
+        color=INK,
+        va="top",
+        ha="right",
     )
     note = f"   (not checked: {', '.join(skipped)})" if skipped else ""
     fig.text(
