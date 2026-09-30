@@ -140,3 +140,4 @@ dmypy.json
 
 # Download cache for examples/video_timing_qc_validation.ipynb
 video_timing_qc_data/
+video_quality_qc_data/

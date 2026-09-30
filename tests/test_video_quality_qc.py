@@ -29,6 +29,14 @@ from aind_dynamic_foraging_behavior_video_analysis import (  # noqa: E402
 from aind_dynamic_foraging_behavior_video_analysis import (  # noqa: E402
     video_quality_report as vqr,
 )
+from aind_dynamic_foraging_behavior_video_analysis.video_alignment import (  # noqa: E402,E501
+    behavior_time_to_frame_index,
+    read_trial_times,
+)
+from tests.test_video_timing_qc import write_trigger_log  # noqa: E402
+
+# Synthetic Harp clock: frame i at FIRST_HARP + i / FPS (on the 32 us grid).
+FIRST_HARP = 1000.0
 
 W, H = 160, 120
 GOP = 10
@@ -86,6 +94,34 @@ def write_mp4(path, n_frames=300, fault=None, container_format=None):
                 out.mux(packet)
         for packet in stream.encode():
             out.mux(packet)
+    return Path(path)
+
+
+def write_video_csv(path, n_frames=300):
+    """New/AIND layout CSV: one row per frame, no drops."""
+    i = np.arange(n_frames)
+    pd.DataFrame(
+        {
+            "ReferenceTime": FIRST_HARP + i / FPS,
+            "CameraFrameNumber": 5000 + i,
+            "CameraFrameTime": (7_000_000_000 + i * 1e9 / FPS).astype("int64"),
+        }
+    ).to_csv(path, index=False)
+    return Path(path)
+
+
+def write_behavior_json(path, first_frame, last_frame, harp=True):
+    """A session JSON whose trials span ``first_frame`` .. ``last_frame``."""
+    starts = FIRST_HARP + np.linspace(first_frame, last_frame - 20, 4) / FPS
+    ends = starts + 20 / FPS
+    obj = {
+        "B_TrialEndTime": list(ends),
+        "B_TrialStartTimeHarp": list(starts),
+        "B_TrialEndTimeHarp": list(ends) if harp else [],
+        "B_GoCueTimeSoundCard": list(starts + 0.1),
+    }
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    Path(path).write_text(json.dumps(obj))
     return Path(path)
 
 
@@ -182,6 +218,18 @@ class FrameMetricTest(unittest.TestCase):
         """A flat neighbourhood gives no offset."""
         self.assertEqual(vqq._parabolic_offset(1.0, 1.0, 1.0), 0.0)
 
+    def test_edge_shifts_see_only_their_strip(self):
+        """Moving the right border only shows in the right strip."""
+        t = _texture()
+        moved = t.copy()
+        moved[:, -40:] = np.roll(t, (0, 5), axis=(0, 1))[:, -40:]
+        shifts = vqq.edge_shifts(t, moved, width=40)
+        self.assertAlmostEqual(shifts["right"][0], 5, delta=0.5)
+        for edge in ["top", "bottom", "left"]:
+            self.assertLess(np.hypot(*shifts[edge][:2]), 5)
+        self.assertLess(np.hypot(*shifts["left"][:2]), 0.5)
+        self.assertGreater(shifts["left"][2], 0.9)
+
     def test_similarity(self):
         """1 for identical, 0 when either image is flat."""
         t = _texture()
@@ -228,17 +276,17 @@ class SamplingTest(TempDirTest):
         self.assertEqual(chosen[-1], 290)
         self.assertTrue((np.diff(chosen) > 0).all())
 
-    def test_choose_time_window(self):
-        """Only keyframes inside the window (video seconds)."""
+    def test_choose_frame_window(self):
+        """Only keyframes inside ``[start, end)``."""
         chosen = vqq.choose_keyframes(
-            self.index, 100, edge_fraction=0, time_window=(1.0, 2.0)
+            self.index, 100, edge_fraction=0, frame_window=(50, 101)
         )
         np.testing.assert_array_equal(chosen, np.arange(50, 101, GOP))
 
     def test_choose_nothing_eligible(self):
         """An empty window raises."""
         with self.assertRaises(ValueError):
-            vqq.choose_keyframes(self.index, 10, time_window=(100, 200))
+            vqq.choose_keyframes(self.index, 10, frame_window=(1000, 2000))
 
     def test_read_keyframes_returns_the_keyframes(self):
         """Each decoded frame is the keyframe asked for."""
@@ -365,6 +413,16 @@ class MeasureTest(TempDirTest):
         self.assertAlmostEqual(moved["shift_x"].median(), 6, delta=0.5)
         self.assertAlmostEqual(moved["shift_y"].median(), 4, delta=0.5)
         self.assertNotIn("view_stable", self.action(qc)[0].index)
+        for edge in vqq.EDGES:
+            self.assertAlmostEqual(
+                moved[f"edge_{edge}_x"].median(), 6, delta=0.5
+            )
+            self.assertAlmostEqual(
+                moved[f"edge_{edge}_y"].median(), 4, delta=0.5
+            )
+        self.assertTrue((moved["edges_shifted"] == 4).all())
+        still = qc.samples.loc[qc.samples["frame_index"] < 200]
+        self.assertTrue((still["edges_shifted"] == 0).all())
 
     def test_level_checks_with_thresholds(self):
         """Clipped highlights fail exposure; other levels pass or fail."""
@@ -410,11 +468,11 @@ class MeasureTest(TempDirTest):
             checks, _ = self.action(qc, camera="Cam")
         self.assertTrue(checks.loc["sharp_enough", "passed"])
 
-    def test_time_window_recorded(self):
+    def test_frame_window_recorded(self):
         """The window limits samples and is kept in the summary."""
-        qc = self.measure("window", time_window=(1.0, 3.0))
-        self.assertEqual(qc.summary.window_start, 1.0)
-        self.assertEqual(qc.summary.window_end, 3.0)
+        qc = self.measure("window", frame_window=(50, 151))
+        self.assertEqual(qc.summary.window_start, 50)
+        self.assertEqual(qc.summary.window_end, 151)
         self.assertEqual(qc.samples["frame_index"].min(), 50)
         self.assertEqual(qc.samples["frame_index"].max(), 150)
 
@@ -491,13 +549,36 @@ class OutputTest(TempDirTest):
         self.assertEqual(vqq._json_ready("x"), "x")
 
     def test_check_session(self):
-        """Both layouts, and an unreadable file."""
-        folder = self.tmp / "behavior-videos"
+        """Both layouts, the task window where the files exist, and an
+        unreadable file."""
+        session = self.tmp / "behavior_123456_2025-01-01_00-00-00"
+        folder = session / "behavior-videos"
         (folder / "BottomCamera").mkdir(parents=True)
         write_mp4(folder / "BottomCamera" / "video.mp4", n_frames=120)
+        write_video_csv(folder / "BottomCamera" / "metadata.csv", 120)
         write_mp4(folder / "side_camera.mp4", n_frames=120)
         (folder / "broken.mp4").write_bytes(b"not a video")
+        write_behavior_json(
+            session / "behavior" / "123456_2025-01-01_00-00-00.json", 30, 90
+        )
+        (session / "behavior" / "behavior_session_model_x.json").write_text(
+            "{}"
+        )
+        log = session / "behavior" / "raw.harp" / "BehaviorEvents"
+        log.mkdir(parents=True)
+        write_trigger_log(
+            log / "Event_94.bin", FIRST_HARP + np.arange(120) / FPS
+        )
         table = vqq.check_session(folder, n_samples=5).set_index("camera")
+        self.assertEqual(table.loc["BottomCamera", "window"], "task")
+        self.assertEqual(table.loc["BottomCamera", "window_start"], 30)
+        self.assertEqual(table.loc["BottomCamera", "window_end"], 90)
+        self.assertEqual(
+            table.loc["side_camera", "window"], "whole file: no video CSV"
+        )
+        self.assertTrue(np.isnan(table.loc["side_camera", "window_start"]))
+        whole = vqq.check_session(folder, n_samples=5, use_task_window=False)
+        self.assertEqual(set(whole["window"]), {"whole file"})
         self.assertEqual(
             list(table.index), ["BottomCamera", "broken", "side_camera"]
         )
@@ -508,6 +589,69 @@ class OutputTest(TempDirTest):
         )
         self.assertEqual(table.loc["broken", "action"], "exclude: unreadable")
         self.assertTrue(table.loc["broken", "error"])
+
+    def test_session_window_fallbacks(self):
+        """No JSON, or no Harp trial times: whole file, with the reason."""
+        session = self.tmp / "no_json"
+        (session / "behavior").mkdir(parents=True)
+        csv = write_video_csv(session / "metadata.csv", 120)
+        self.assertEqual(
+            vqq._session_window(session, csv, None),
+            (None, "whole file: no behavior JSON"),
+        )
+        write_behavior_json(
+            session / "behavior" / "1_x.json", 30, 90, harp=False
+        )
+        window, note = vqq._session_window(session, csv, None)
+        self.assertIsNone(window)
+        self.assertIn("No Harp trial times", note)
+
+
+class TaskWindowTest(TempDirTest):
+    """Trial times from the session JSON, mapped to frames."""
+
+    def test_read_trial_times(self):
+        """NWB column names; Harp go cue preferred when present."""
+        path = write_behavior_json(self.tmp / "a" / "s.json", 30, 90)
+        trials = read_trial_times(path)
+        self.assertEqual(
+            list(trials.columns),
+            ["start_time", "goCue_start_time", "stop_time"],
+        )
+        self.assertEqual(len(trials), 4)
+        obj = json.loads(path.read_text())
+        obj["B_GoCueTimeHarp"] = [1.0, 2.0, 3.0, 4.0]
+        path.write_text(json.dumps(obj))
+        self.assertEqual(
+            read_trial_times(path)["goCue_start_time"].tolist(),
+            [1.0, 2.0, 3.0, 4.0],
+        )
+
+    def test_read_trial_times_url(self):
+        """A URL is fetched."""
+        path = write_behavior_json(self.tmp / "b" / "s.json", 30, 90)
+        with mock.patch(
+            "urllib.request.urlopen", return_value=open(path, "rb")
+        ) as urlopen:
+            trials = read_trial_times("https://example.org/s.json")
+        urlopen.assert_called_once_with("https://example.org/s.json")
+        self.assertEqual(len(trials), 4)
+
+    def test_behavior_time_to_frame_index(self):
+        """First frame at or after; past the end gives len."""
+        harp = np.array([10.0, 10.5, 11.0])
+        np.testing.assert_array_equal(
+            behavior_time_to_frame_index([10.0, 10.2, 12.0], harp), [0, 1, 3]
+        )
+
+    def test_task_frame_window(self):
+        """CSV alone and with the trigger log agree."""
+        csv = write_video_csv(self.tmp / "metadata.csv", 300)
+        path = write_behavior_json(self.tmp / "c" / "s.json", 40, 260)
+        log = self.tmp / "Event_94.bin"
+        write_trigger_log(log, FIRST_HARP + np.arange(300) / FPS)
+        self.assertEqual(vqq.task_frame_window(path, csv), (40, 260))
+        self.assertEqual(vqq.task_frame_window(path, csv, log), (40, 260))
 
 
 class ReportTest(TempDirTest):
@@ -521,11 +665,11 @@ class ReportTest(TempDirTest):
         bad = write_mp4(cls.tmp / "bad.mp4", fault=after(200, blur))
         cls.items = []
         for label, path, window in [
-            ("good", good, (0.5, 5.0)),
+            ("good", good, (25, 250)),
             ("bad", bad, None),
         ]:
             qc = vqq.measure_video_quality(
-                path, edge_fraction=0, time_window=window
+                path, edge_fraction=0, frame_window=window
             )
             cls.items.append((label, qc, vqq.check_video_quality(qc)))
 
@@ -533,8 +677,8 @@ class ReportTest(TempDirTest):
         """Renders for passing and failing videos."""
         for label, qc, checks in self.items:
             fig = vqr.session_card(qc, checks)
-            # reference, 8 thumbnails, 4 time panels, histogram, 6 frames
-            self.assertEqual(len(fig.axes), 20)
+            # reference, 8 thumbnails, 5 time panels, histogram, 6 frames
+            self.assertEqual(len(fig.axes), 21)
             matplotlib.pyplot.close(fig)
 
     def test_contact_sheet(self):

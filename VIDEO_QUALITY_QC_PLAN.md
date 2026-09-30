@@ -1,12 +1,14 @@
 # Plan: `video_quality_qc` — image-quality QC of behavior videos
 
-> Status: revision 3 (2026-09-30). Phase 1 implemented (`video_quality_qc`,
+> Status: revision 4 (2026-09-30). Phase 1 implemented (`video_quality_qc`,
 > `video_quality_report`, tests, `examples/video_quality_qc_validation.ipynb`); Phases 2–4 not
 > started. Revision 2 recorded the decisions on revision 1's open questions (see "Decisions").
-> Revision 3 records what the first real session changed (see "Findings: first real session"):
+> Revision 3 recorded what the first real session changed (see "Findings: first real session"):
 > `view_stable` is dropped (a lick-spout move reads as a camera shift), `similarity` is a plain
-> correlation, clipping is counted at the tagged range, luma is read from the coded plane, and an
-> optional `time_window` exists because recordings run past the session. Written so a new
+> correlation, clipping is counted at the tagged range, luma is read from the coded plane.
+> Revision 4 (see "Findings: task window and border strips") samples the task only, with trial
+> times read from the raw asset (no NWB), and adds per-border-strip shifts, reported only, for a
+> survey of whether cameras ever move. Written so a new
 > contributor or agent can pick it up without the conversation that produced it. The evidence
 > behind each choice is in "Measurements" and "Findings".
 
@@ -44,10 +46,10 @@ Frames are read with PyAV. The exposure statistics, format probing and frame ind
 | Where generic metrics live | **Build here, offer to `aind-video-utils` later.** Follow its structure where it fits (see "Conventions"). |
 | `compute_frame_stats` | **Import `aind-video-utils`, pinned** (`aind-video-utils==0.7.0` in the extra). |
 | Region | **Whole frame.** |
-| Sampling window | **Whole file**, minus 1% at each end (the `aind-video-utils` default); never frame 0. Revision 3 adds an optional `time_window`, because the first real session's recording ran 8 min past the task and failed every stability check (see Findings). Where the pipeline gets the window is open. |
+| Sampling window | **Whole file**, minus 1% at each end (the `aind-video-utils` default); never frame 0. Revision 4: **the task** (first trial start to last trial end) when the raw asset's session JSON and the camera's CSV are present (`check_session` does this by default; `task_frame_window` otherwise), falling back to the whole file with the reason recorded. The first real session's recording ran 9 min before and 12 min after the task (Findings). |
 | Known-bad examples | None yet. Phase 2's population survey is where they will be found. |
 | Session vs trial exclusion | **Whole sessions.** |
-| Link to `video_timing_qc` | **None.** It existed only to put bad segments on the Harp clock; with whole-session exclusion there are no segments. Samples carry frame index and video time from the MP4 index. The batch pipeline records both actions side by side, and either one excludes a session. |
+| Link to `video_timing_qc` | **None for the quality metrics.** Revision 4: the task window uses it, since only the corrected timing puts trial times on the right frames (315 s off otherwise on a session with drops). Quality samples carry frame index and video time from the MP4 index. The batch pipeline records both actions side by side, and either one excludes a session. |
 
 ## Prior art: what exists and what to reuse
 
@@ -71,10 +73,10 @@ camera). Reproduced in `examples/video_quality_qc_validation.ipynb`.
 
 1. **The recording runs past the session.** From ~83 min to the end (92 min) both cameras show
    an empty rig. Over the whole file every stability check fails on those last 9 samples
-   (similarity 0.04–0.16) and both cameras would be excluded. With `time_window=(0, 4950)`
-   (read off the cards) both pass: sharpness spread 0.23 / 0.16, brightness spread 0.03 / 0.05,
+   (similarity 0.04–0.16) and both cameras would be excluded. Over the first 82.5 min (read off
+   the cards) both pass: sharpness spread 0.23 / 0.16, brightness spread 0.03 / 0.05,
    similarity p5 0.905 / 0.884. **Whole-file sampling will exclude every session with such a
-   tail**, so Phase 3 needs the task window (see Open questions).
+   tail**, so the task window is needed (revision 4, below).
 2. **A lick-spout move reads as a camera shift.** At ~71 min the bottom camera's phase-correlation
    shift jumps to (−9.8, −10.0) px and stays, constant to 0.02 px. An overlay of the frames before
    and after shows only the motorized spouts moved; the mouse and the rig are still registered.
@@ -109,6 +111,54 @@ Task-window medians, for the Phase 2 survey to compare against:
 | dynamic range (p99 − p1) | 158.5 | 212 |
 | % clipped at ceiling | 0.10 | 1.46 |
 | noise σ | 1.08 | 1.49 |
+
+## Findings: task window and border strips (revision 4)
+
+**Trial times without an NWB.** The raw asset holds them. Ways of getting them, on
+`behavior_816212_2025-12-05_13-47-41` (506 trials):
+
+| Source | Cost | Agrees with the NWB? | Notes |
+|---|---|---|---|
+| `behavior/<subject>_<datetime>.json` (GUI session JSON, 7 MB) | 0.07 s parse, 0.36 s over HTTPS | **identical**, all trials, `start_time`, `goCue_start_time`, `stop_time` | The NWB is built from it: `TransferToNWB.bonsai_to_nwb` copies `B_TrialStartTimeHarp`, `B_TrialEndTimeHarp`, `B_GoCueTimeHarp` or `B_GoCueTimeSoundCard`. **Used.** |
+| `behavior/raw.harp/ToBonsaiOSC/{TrialStartTime,GoCueTime,TrialEndTime}.csv` | 0.01 s | 2–6 ms off | Software (OSC) times, not the Harp values. |
+| `bonsai_to_nwb` on the JSON, then `load_nwb` | 1.3 s + 0.2 s | identical | Needs the `kinematics` extra (pynwb and friends). |
+| `foraging_nwb_bonsai` Code Ocean asset | — | not checked | Must be attached per capsule. The CO API key can search assets but file listing returned `forbidden`. |
+
+`video_alignment.read_trial_times` reads the JSON (path or URL); files without Harp trial times
+(older sessions with CPU times only) raise `ValueError`.
+
+**Trial times to frames.** `task_frame_window` loads the camera's CSV, corrects its timing
+(`video_timing_qc`, with the trigger log when present) and maps the first trial start and last
+trial end with `behavior_time_to_frame_index` (`searchsorted` on the corrected Harp time). Cost
+2.3 s per camera (1.5 s reading 2.7M CSV rows, 1.4 s correcting); the CSV must be local (4 s to
+download 112 MB). The trigger log gave the same frames as the CSV alone. Subtracting the first
+frame's Harp time instead puts the task end **315 s late** on this session, which dropped
+187,024 frames, so the corrected timing is required. When the correction refuses a session,
+`check_session` samples the whole file and records why in `window`.
+
+The task ran from frame 280,988 to 2,388,169 of the bottom camera, **9.4 to 79.6 min** of a
+92-min video: 9 minutes of setup before the first trial as well as the empty tail. Over the task
+both cameras pass (sharpness spread 0.26 / 0.16, brightness spread 0.03 / 0.06, similarity p5
+0.91 / 0.91).
+
+**Border strips.** Shift per 48 px border strip, reported only (`edge_<side>_x/_y`,
+`edge_<side>`, `edge_<side>_peak`, and `edges_shifted`, the count above 3 px), for a survey of
+whether cameras ever move before designing a check:
+
+| | top | bottom | left | right |
+|---|---|---|---|---|
+| side camera, max shift over the task (px) | 0.1 | 0.1 | 0.3 | 1.8 |
+| side camera, median peak | 0.83 | 0.40 | 0.18 | 0.38 |
+| bottom camera, max shift (px) | 2.0 | 184 | 100 | 13.7 (spouts) |
+| bottom camera, median peak | 0.07 | 0.08 | 0.04 | 0.79 |
+
+A synthetic 6 × 4 px bump is recovered by all four strips on the side camera and by top, bottom
+and right on the bottom camera. On the side camera the strips are a clean signal
+(`edges_shifted` 0 on all 100 samples). On the bottom camera they are not: the floor is dark and
+the left strip holds the mouse, so their estimates are noise (`edges_shifted` 1–3 on 86 of 100
+samples with no bump), and the one confident strip is the one the spouts cross. Gating on peak
+height does not help there: a correctly recovered bump also has peaks 0.06–0.2 on those strips.
+The survey should read the side camera's strips first.
 
 ## Background: the MP4
 
@@ -196,6 +246,7 @@ sensor noise.
 | `noise_sigma` | Immerkær fast noise estimate on full-res luma | gain change, low light; explains a noisy frame that scores as "sharp" |
 | `similarity` | Pearson correlation of `d` with the reference | occlusion, lens cap, lights or IR off, empty rig, large bumps |
 | `shift_x`, `shift_y`, `shift` | phase correlation (Hann window, parabolic sub-pixel peak) of the full-res frame against the reference | **reported only**: a spout move reads the same as a camera bump (Findings 2) |
+| `edge_<side>_x`, `_y`, `edge_<side>`, `edge_<side>_peak`, `edges_shifted` | the same per 48 px border strip, with the correlation peak height; count of strips over 3 px | **reported only**, for the camera-shift survey (revision 4 Findings) |
 | `histogram` | 256 luma counts | report histogram; re-deriving any percentile later |
 
 **Reference frame**: the pixel-wise median of the first 10 samples. The median ignores a moving
@@ -247,8 +298,10 @@ consumers act on the action.
 ```python
 from aind_dynamic_foraging_behavior_video_analysis import video_quality_qc as vqq
 
+window = vqq.task_frame_window("behavior/<subject>_<datetime>.json",
+                               "behavior-videos/BottomCamera/metadata.csv", trigger_log=None)
 qc = vqq.measure_video_quality("behavior-videos/BottomCamera/video.mp4", n_samples=100,
-                               time_window=None)  # (start, end) in video seconds
+                               frame_window=window)  # [start, end) frames = CSV rows
 qc.samples     # DataFrame: one row per keyframe: frame_index, video_time, metrics
 qc.reference   # uint8 reference frame
 qc.summary     # VideoQualityQc: format info + median/p5/p95/spread per metric
@@ -343,13 +396,14 @@ a few hundred frames) from a textured pattern with a moving blob. Cases:
 
 ## Phases
 
-1. **Measure, check, report (done, revision 3).** Everything above except calibrated level
-   thresholds. `tests/test_video_quality_qc.py`: 40 tests, 100% line coverage of both modules,
+1. **Measure, check, report (done, revisions 3–4).** Everything above except calibrated level
+   thresholds. `tests/test_video_quality_qc.py`: 46 tests, 100% line coverage of both modules,
    ~10 s. Validate on
    public sessions (e.g. `behavior_816212_2025-12-05_13-47-41`, both cameras) in an executed
    example notebook (`examples/video_quality_qc_validation.ipynb`).
 2. **Population survey and calibration.** Run on every attached LP session and the FIP population
-   (97 sessions × 2 cameras, from the timing plan). Scroll the batch PDF, collect the bad
+   (97 sessions × 2 cameras, from the timing plan), over the task window. Look for step changes
+   in the border-strip shifts (side camera first) to learn whether cameras ever move. Scroll the batch PDF, collect the bad
    sessions found, set stability tolerances and level thresholds per camera from the
    distributions, and record the evidence here. Decide from the data whether the dense keyframe
    pass is needed.
@@ -361,13 +415,9 @@ a few hundred frames) from a textured pattern with a moving blob. Cases:
 
 ## Open questions
 
-- **Task window.** Where does `time_window` come from in the pipeline? Options: the first go cue
-  and last trial end from the NWB, mapped to video time through the video CSV
-  (`video_alignment.behavior_time_to_video_time`; this would bring back a light link to the
-  timing side); or a crude rule (drop samples after the last one that matches the reference).
-  Until decided, whole-file sampling excludes any session whose recording outlasts the task.
-- **View shift.** Worth a per-camera mask of fixed structure (rig, not spouts) so `shift` can
-  become a check again? Phase 2 will show whether camera bumps happen at all.
+- **View shift.** Do cameras ever move? The Phase 2 survey of the border-strip shifts answers
+  it; only then is a check worth designing (the bottom camera would need a mask of fixed rig
+  structure, since its borders are dark, hold the mouse, or cross the spouts).
 - Stability tolerances and the similarity floor are first guesses; Phase 2 sets them.
 - Whether level thresholds can be shared across rigs for a camera, or need a rig key too.
 

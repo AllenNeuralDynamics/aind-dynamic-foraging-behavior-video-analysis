@@ -73,26 +73,34 @@ sampled keyframes are decoded (a few seconds locally, about 30 s per camera
 over HTTPS). Metrics per keyframe: sharpness (Laplacian variance, 2×
 downsampled), noise, brightness and exposure statistics (from
 `aind-video-utils`), contrast, clipping at the tagged range, similarity to a
-reference frame, and shift from it (reported only). Needs the `video-qc`
-extra and `ffprobe` on `PATH`.
+reference frame, and shift from it and in each border strip (reported
+only). Needs the `video-qc` extra and `ffprobe` on `PATH`.
 
 ```python
 from aind_dynamic_foraging_behavior_video_analysis import video_quality_qc as vqq
 from aind_dynamic_foraging_behavior_video_analysis import video_quality_report as vqr
 
+# Task frames (first trial start to last trial end) from the raw asset:
+# trial times from the session JSON, put on frames by the corrected timing.
+window = vqq.task_frame_window("behavior/<subject>_<datetime>.json",
+                               "behavior-videos/BottomCamera/metadata.csv",
+                               trigger_log="behavior/raw.harp/BehaviorEvents/Event_94.bin")
 qc = vqq.measure_video_quality("behavior-videos/BottomCamera/video.mp4",
-                               time_window=(0, 4950))  # video seconds; optional
+                               frame_window=window)
 checks = vqq.check_video_quality(qc, camera="BottomCamera")
 vqq.quality_action(checks)        # "use" or "exclude: <check>"
 vqq.write_video_quality(qc, checks, "results/", camera="BottomCamera")
 vqr.session_card(qc, checks)      # one-page figure; vqr.batch_pdf for many
+vqq.check_session("<session>/behavior-videos")  # every camera, task window found itself
 ```
 
 Stability checks (sharpness, brightness, scene) compare each sample with
 the session's own median and need no calibration. Level checks (sharp
 enough, exposure, contrast) are skipped until thresholds are calibrated
-per camera. The recording often runs past the session, which fails the
-stability checks, so pass the task as `time_window`. Design, evidence and
+per camera. The recording often runs past the session (and starts before
+it), which fails the stability checks, so measure the task only. No NWB is
+needed: `video_alignment.read_trial_times` reads the trial times from the raw
+session JSON (the same values as the NWB trials table). Design, evidence and
 limits: `VIDEO_QUALITY_QC_PLAN.md`; `examples/video_quality_qc_validation.ipynb`
 runs it on a public session.
 
@@ -101,6 +109,9 @@ runs it on a public session.
 
 ### Unreleased
 
+- **New:** `video_alignment.read_trial_times` (trial start, go cue and end
+  from the raw session JSON, as in the NWB) and
+  `video_alignment.behavior_time_to_frame_index`.
 - **New:** `video_quality_qc` and `video_quality_report` (see above), in a
   new `video-qc` extra (`aind-video-utils==0.7.0`, `av`, `matplotlib`,
   `pyarrow`). Nothing existing changes.

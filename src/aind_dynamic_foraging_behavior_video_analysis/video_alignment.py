@@ -1,7 +1,7 @@
 """Standalone helpers for aligning behavior video frames to behavior/session time.
 
-This module is intentionally dependency-light (``pandas`` only) and decoupled from
-the kinematics pipeline so it can be reused on its own. It answers a single
+This module is intentionally dependency-light (``numpy`` and ``pandas``) and
+decoupled from the kinematics pipeline so it can be reused on its own. It answers a single
 question: given the behavior video acquisition CSV and the time of the first go
 cue, how do you convert event times from other data streams (spikes, fiber
 photometry, behavior events) into seconds within the recorded video so you can
@@ -38,6 +38,14 @@ time with :mod:`video_timing_qc`, map events to frames with
 ``numpy.searchsorted`` on the corrected ``harp_time`` instead of by
 subtraction.
 
+Trial times
+-----------
+:func:`read_trial_times` reads trial start, go cue and trial end straight
+from the raw session JSON (``behavior/<subject>_<datetime>.json``), the
+same Harp-clock values ``TransferToNWB.bonsai_to_nwb`` writes into the NWB
+trials table, so no NWB is needed. :func:`behavior_time_to_frame_index`
+puts behavior times on video frames through a corrected timing table.
+
 Example
 -------
 First frame at ``behavior_time`` 100.0 s, first go cue at 105.25 s, and a spike of
@@ -48,8 +56,11 @@ interest at 112.0 s::
     >>> session_time_to_video_time(6.75, offset)                        # -> 12.0
 """
 
+import json
+import urllib.request
 from typing import List, Optional
 
+import numpy as np
 import pandas as pd
 
 # Column layout of the Bonsai / AIND behavior video acquisition CSV. Two
@@ -310,3 +321,76 @@ def video_time_to_behavior_time(video_times, first_frame_behavior_time):
         ``video_times + first_frame_behavior_time``.
     """
     return video_times + first_frame_behavior_time
+
+
+def read_trial_times(behavior_json_path) -> pd.DataFrame:
+    """Read per-trial Harp times from the raw foraging session JSON.
+
+    Uses the fields ``TransferToNWB.bonsai_to_nwb`` copies into the NWB
+    trials table, so the values equal the NWB's ``start_time``,
+    ``goCue_start_time`` and ``stop_time``: ``B_TrialStartTimeHarp``,
+    ``B_TrialEndTimeHarp``, and ``B_GoCueTimeHarp`` (older files) or
+    ``B_GoCueTimeSoundCard``.
+
+    Parameters
+    ----------
+    behavior_json_path : str or pathlib.Path
+        Local path or http(s) URL of ``behavior/<subject>_<datetime>.json``.
+
+    Returns
+    -------
+    pandas.DataFrame
+        One row per trial: ``start_time``, ``goCue_start_time``,
+        ``stop_time`` (Harp seconds, the behavior_time clock).
+
+    Raises
+    ------
+    ValueError
+        If the file has no Harp trial times (older sessions recorded CPU
+        times only, which are not on the video's clock).
+    """
+    path = str(behavior_json_path)
+    if path.startswith(("http://", "https://")):
+        with urllib.request.urlopen(path) as response:
+            obj = json.load(response)
+    else:
+        with open(path) as f:
+            obj = json.load(f)
+    if not obj.get("B_TrialEndTimeHarp"):
+        raise ValueError(f"No Harp trial times in {behavior_json_path}")
+    go_cue_field = (
+        "B_GoCueTimeHarp"
+        if "B_GoCueTimeHarp" in obj
+        else "B_GoCueTimeSoundCard"
+    )
+    n_trials = len(obj["B_TrialEndTime"])
+    return pd.DataFrame(
+        {
+            "start_time": obj["B_TrialStartTimeHarp"][:n_trials],
+            "goCue_start_time": obj[go_cue_field][:n_trials],
+            "stop_time": obj["B_TrialEndTimeHarp"][:n_trials],
+        },
+        dtype="float64",
+    )
+
+
+def behavior_time_to_frame_index(behavior_times, harp_time):
+    """Return the first video frame at or after each behavior time.
+
+    Parameters
+    ----------
+    behavior_times : float or array-like
+        Harp (behavior_time) seconds.
+    harp_time : array-like
+        Harp time of every video frame, increasing: the ``harp_time``
+        column of ``video_timing_qc.correct_video_timing``. Do not use the
+        raw CSV column when frames were dropped; its rows carry the times
+        of earlier triggers (see the module docstring).
+
+    Returns
+    -------
+    numpy.ndarray or int
+        Frame indices (= CSV rows); ``len(harp_time)`` for a time after the
+        last frame.
+    """
+    return np.searchsorted(np.asarray(harp_time), behavior_times, side="left")

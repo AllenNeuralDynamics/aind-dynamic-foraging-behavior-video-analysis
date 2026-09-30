@@ -21,7 +21,16 @@ Metrics per sampled keyframe (luma only; the cameras are monochrome):
 - ``shift_x``, ``shift_y``, ``shift``: phase-correlation shift from the
   reference, in pixels. Reported only: on the bottom camera the motorized
   lick spouts dominate it, so a spout move reads as a 14 px shift while
-  the camera stays put (``VIDEO_QUALITY_QC_PLAN.md``, "Findings").
+  the camera stays put (``VIDEO_QUALITY_QC_PLAN.md``, "Findings");
+- ``edge_<side>_x``, ``edge_<side>_y``, ``edge_<side>``,
+  ``edge_<side>_peak`` (confidence, see :func:`phase_correlation`) for ``top``,
+  ``bottom``, ``left``, ``right``: the same shift estimated in each
+  ``EDGE_STRIP_PX`` border strip alone. Reported only, for a survey of
+  whether cameras ever move: a camera bump moves every textured strip
+  together, a spout move only the strips it crosses. ``edges_shifted``
+  counts the strips shifted by more than ``EDGE_SHIFT_PX``. On the bottom
+  camera the only strip with a strong peak is the one the spouts cross;
+  the others are dark or hold the mouse and give noisy estimates.
 
 Checks, one question each (:func:`check_video_quality` runs them all):
 
@@ -40,15 +49,20 @@ check (a paw in front of the lens); two consecutive samples do.
 
 The recording often runs past the session (on
 ``behavior_816212_2025-12-05_13-47-41`` the last 8 minutes show an empty
-rig), which fails every stability check; pass ``time_window`` to measure
-the task only.
+rig), which fails every stability check. :func:`task_frame_window` finds
+the frames from the first trial start to the last trial end, from the raw
+session JSON and the corrected video timing; pass it as ``frame_window``.
+:func:`check_session` does this itself when it finds those files.
 
 Decision (:func:`quality_action`): ``exclude: <check>`` for the first
 failed check, otherwise ``use``. The module never removes data.
 
 Example::
 
-    qc = measure_video_quality("behavior-videos/BottomCamera/video.mp4")
+    window = task_frame_window("behavior/<subject>_<datetime>.json",
+                               "behavior-videos/BottomCamera/metadata.csv")
+    qc = measure_video_quality("behavior-videos/BottomCamera/video.mp4",
+                               frame_window=window)
     checks = check_video_quality(qc, camera="BottomCamera")
     quality_action(checks)   # "use" or "exclude: <check>"
     write_video_quality(qc, checks, "results/", camera="BottomCamera")
@@ -78,7 +92,16 @@ from aind_video_utils.mp4_index import Mp4FrameIndex
 from aind_video_utils.probe import ProbeDict, get_r_frame_rate
 from aind_video_utils.qc_batch import FrameExposureStats, compute_frame_stats
 
-from aind_dynamic_foraging_behavior_video_analysis import __version__
+from aind_dynamic_foraging_behavior_video_analysis import (
+    __version__,
+)
+from aind_dynamic_foraging_behavior_video_analysis import (
+    video_timing_qc as vtq,
+)
+from aind_dynamic_foraging_behavior_video_analysis.video_alignment import (
+    behavior_time_to_frame_index,
+    read_trial_times,
+)
 
 # Stability tolerances, relative to the session's own median. First guesses
 # (2026-09-30); to be set from the population survey (plan, Phase 2).
@@ -94,6 +117,12 @@ LEVEL_THRESHOLDS: dict[str, dict[str, float]] = {}
 
 # The reference frame is the pixel-wise median of this many first samples.
 REFERENCE_SAMPLES = 10
+
+# Width of each border strip for the per-edge shifts (full-res pixels).
+EDGE_STRIP_PX = 48
+EDGES = ["top", "bottom", "left", "right"]
+# A strip counts toward ``edges_shifted`` above this shift (reported only).
+EDGE_SHIFT_PX = 3.0
 
 # Fraction of the file skipped at each end (aind-video-utils default).
 DEFAULT_EDGE_FRACTION = 0.01
@@ -170,8 +199,8 @@ class VideoQualityQc:
     gop: float
     n_samples: int
     edge_fraction: float
-    window_start: float | None
-    window_end: float | None
+    window_start: int | None
+    window_end: int | None
     sharpness_med: float
     sharpness_p5: float
     sharpness_p95: float
@@ -346,13 +375,16 @@ def _parabolic_offset(left: float, centre: float, right: float) -> float:
     return 0.0 if denom == 0 else 0.5 * (left - right) / denom
 
 
-def phase_shift(
+def phase_correlation(
     reference: npt.ArrayLike, image: npt.ArrayLike
-) -> tuple[float, float]:
-    """Return the ``(dx, dy)`` translation of ``image`` from ``reference``.
+) -> tuple[float, float, float]:
+    """Return the ``(dx, dy, peak)`` translation of ``image``.
 
     Phase correlation with a Hann window and parabolic sub-pixel peak
-    interpolation. Positive ``dx`` means the content moved right.
+    interpolation. Positive ``dx`` means the content moved right. ``peak``
+    (0-1) is the height of the correlation peak: near 1 for a clean
+    translation of textured content, low for featureless or changing
+    content, where the shift is unreliable.
     """
     ref = np.asarray(reference, dtype=np.float64)
     img = np.asarray(image, dtype=np.float64)
@@ -376,7 +408,39 @@ def phase_shift(
     # Peaks past the midpoint are negative shifts (the FFT wraps around).
     dy = dy - h if dy > h / 2 else dy
     dx = dx - w if dx > w / 2 else dx
-    return float(dx), float(dy)
+    return float(dx), float(dy), float(corr[peak_y, peak_x])
+
+
+def phase_shift(
+    reference: npt.ArrayLike, image: npt.ArrayLike
+) -> tuple[float, float]:
+    """Return the ``(dx, dy)`` translation of ``image`` from ``reference``
+    (see :func:`phase_correlation`)."""
+    dx, dy, _ = phase_correlation(reference, image)
+    return dx, dy
+
+
+def edge_strips(image: npt.ArrayLike, width: int = EDGE_STRIP_PX) -> dict:
+    """The four border strips of an image, ``width`` pixels deep."""
+    y = np.asarray(image)
+    return {
+        "top": y[:width],
+        "bottom": y[-width:],
+        "left": y[:, :width],
+        "right": y[:, -width:],
+    }
+
+
+def edge_shifts(
+    reference: npt.ArrayLike, image: npt.ArrayLike, width: int = EDGE_STRIP_PX
+) -> dict[str, tuple[float, float, float]]:
+    """Phase-correlation ``(dx, dy, peak)`` of each border strip separately.
+
+    A strip can only resolve shifts under half its depth across it.
+    """
+    ref = edge_strips(reference, width)
+    img = edge_strips(image, width)
+    return {edge: phase_correlation(ref[edge], img[edge]) for edge in EDGES}
 
 
 def similarity(reference: npt.ArrayLike, image: npt.ArrayLike) -> float:
@@ -403,14 +467,15 @@ def choose_keyframes(
     index: Mp4FrameIndex,
     n_samples: int,
     edge_fraction: float = DEFAULT_EDGE_FRACTION,
-    time_window: tuple[float, float] | None = None,
+    frame_window: tuple[int, int] | None = None,
 ) -> npt.NDArray[np.int64]:
     """Pick up to ``n_samples`` keyframes evenly across the file.
 
     Frame 0 (which carries embedded metadata) and the first and last
-    ``edge_fraction`` of the file are never picked. ``time_window``
-    (``(start, end)`` in video seconds) further limits the choice. With
-    fewer eligible keyframes than ``n_samples``, each is used once.
+    ``edge_fraction`` of the file are never picked. ``frame_window``
+    (``[start, end)`` frame indices, e.g. from :func:`task_frame_window`)
+    further limits the choice. With fewer eligible keyframes than
+    ``n_samples``, each is used once.
 
     Returns
     -------
@@ -426,10 +491,9 @@ def choose_keyframes(
     edge = int(np.ceil(n * edge_fraction))
     keys = keyframe_display_indices(index)
     keys = keys[(keys >= max(1, edge)) & (keys < n - edge)]
-    if time_window is not None:
-        seconds = _presentation_pts(index)[keys] / index.media_timescale
-        start, end = time_window
-        keys = keys[(seconds >= start) & (seconds <= end)]
+    if frame_window is not None:
+        start, end = frame_window
+        keys = keys[(keys >= start) & (keys < end)]
     if keys.size == 0:
         raise ValueError("No keyframe outside the skipped edges and window")
     if keys.size <= n_samples:
@@ -572,7 +636,7 @@ def measure_video_quality(
     video_path: str | Path,
     n_samples: int = 100,
     edge_fraction: float = DEFAULT_EDGE_FRACTION,
-    time_window: tuple[float, float] | None = None,
+    frame_window: tuple[int, int] | None = None,
     probe_json: ProbeDict | None = None,
 ) -> VideoQualityResult:
     """Sample keyframes across an MP4 and measure image quality.
@@ -585,8 +649,9 @@ def measure_video_quality(
         Keyframes to sample (default 100).
     edge_fraction : float, optional
         Fraction of the file skipped at each end (default 0.01).
-    time_window : (float, float), optional
-        Sample only between these video times (s), e.g. the task.
+    frame_window : (int, int), optional
+        Sample only frames ``[start, end)`` (video frame = CSV row), e.g.
+        the task from :func:`task_frame_window`.
     probe_json : dict, optional
         ``aind_video_utils.probe`` output, if already probed.
 
@@ -603,7 +668,7 @@ def measure_video_quality(
     _require_mp4(pj, video_path)
     index = read_mp4_frame_index(video_path)
     info = _format_info(pj, index)
-    chosen = choose_keyframes(index, n_samples, edge_fraction, time_window)
+    chosen = choose_keyframes(index, n_samples, edge_fraction, frame_window)
     decoded = read_keyframes(video_path, index, chosen)
     color_range, bit_depth = info["color_range"], info["bit_depth"]
     media_pts = _presentation_pts(index)
@@ -617,6 +682,15 @@ def measure_video_quality(
     for i, (frame_index, (pts, luma)) in enumerate(zip(chosen, decoded)):
         stats = frame_quality_stats(luma, color_range, bit_depth)
         dx, dy = phase_shift(reference, luma)
+        edges = {}
+        for edge, (ex, ey, peak) in edge_shifts(reference, luma).items():
+            edges[f"edge_{edge}_x"] = ex
+            edges[f"edge_{edge}_y"] = ey
+            edges[f"edge_{edge}"] = float(np.hypot(ex, ey))
+            edges[f"edge_{edge}_peak"] = peak
+        edges["edges_shifted"] = sum(
+            edges[f"edge_{edge}"] > EDGE_SHIFT_PX for edge in EDGES
+        )
         rows.append(
             {
                 "sample": i,
@@ -636,6 +710,7 @@ def measure_video_quality(
                 "shift_y": dy,
                 "shift": float(np.hypot(dx, dy)),
                 "similarity": similarity(reference_small, downsample2(luma)),
+                **edges,
             }
         )
     samples = pd.DataFrame(rows)
@@ -643,8 +718,8 @@ def measure_video_quality(
         **info,
         n_samples=len(samples),
         edge_fraction=edge_fraction,
-        window_start=time_window[0] if time_window else None,
-        window_end=time_window[1] if time_window else None,
+        window_start=int(frame_window[0]) if frame_window else None,
+        window_end=int(frame_window[1]) if frame_window else None,
         **_summarize(samples),
     )
     return VideoQualityResult(
@@ -890,37 +965,124 @@ def write_video_quality(
 # --- Whole session -------------------------------------------------------
 
 
-def find_session_videos(behavior_videos_path) -> list[tuple[str, Path]]:
-    """Return ``(camera, path)`` for every MP4 in a ``behavior-videos``
-    folder: ``<Camera>/video.mp4`` (New/AIND) or ``<camera>.mp4``
-    (Old/flat)."""
+def task_frame_window(
+    behavior_json, video_csv, trigger_log=None
+) -> tuple[int, int]:
+    """Frames from the first trial start to the last trial end.
+
+    Trial times come from the raw session JSON
+    (:func:`video_alignment.read_trial_times`, the same values as the NWB
+    trials table). They are put on frames through the corrected video
+    timing: with dropped frames the raw CSV's Harp column runs early (on
+    ``behavior_816212_2025-12-05_13-47-41``, subtracting the first frame's
+    time put the task end 315 s late).
+
+    Parameters
+    ----------
+    behavior_json : str or pathlib.Path
+        ``behavior/<subject>_<datetime>.json`` (path or URL).
+    video_csv : str or pathlib.Path
+        The camera's video CSV (local), either layout.
+    trigger_log : str or pathlib.Path, optional
+        ``Event_94.bin``; used for the timing correction when given.
+
+    Returns
+    -------
+    (start, end)
+        ``[start, end)`` video frame indices (= CSV rows).
+
+    Raises
+    ------
+    ValueError
+        If the JSON has no Harp trial times, or the timing correction
+        refuses the CSV.
+    """
+    trials = read_trial_times(behavior_json)
+    timing = vtq.load_video_timing(video_csv)
+    triggers = vtq.read_harp_trigger_log(trigger_log) if trigger_log else None
+    harp_time = vtq.correct_video_timing(timing, trigger_times=triggers)[
+        "harp_time"
+    ]
+    start = behavior_time_to_frame_index(trials["start_time"].min(), harp_time)
+    end = behavior_time_to_frame_index(trials["stop_time"].max(), harp_time)
+    return int(start), int(end)
+
+
+def find_session_videos(behavior_videos_path) -> list[tuple[str, Path, Path]]:
+    """Return ``(camera, video, csv)`` for every MP4 in a
+    ``behavior-videos`` folder: ``<Camera>/video.mp4`` with
+    ``<Camera>/metadata.csv`` (New/AIND), or ``<camera>.mp4`` with
+    ``<camera>.csv`` (Old/flat). The CSV may not exist."""
     folder = Path(behavior_videos_path)
-    new = [(p.parent.name, p) for p in sorted(folder.glob("*/video.mp4"))]
-    old = [(p.stem, p) for p in sorted(folder.glob("*.mp4"))]
+    new = [
+        (p.parent.name, p, p.parent / "metadata.csv")
+        for p in sorted(folder.glob("*/video.mp4"))
+    ]
+    old = [
+        (p.stem, p, p.with_suffix(".csv"))
+        for p in sorted(folder.glob("*.mp4"))
+    ]
     return new + old
 
 
+def find_behavior_json(session_folder) -> Path | None:
+    """The raw session JSON, ``behavior/<subject>_<datetime>.json``."""
+    matches = sorted(
+        p
+        for p in Path(session_folder).glob("behavior/*.json")
+        if p.name[:1].isdigit()
+    )
+    return matches[0] if matches else None
+
+
+def _session_window(session_folder, video_csv, trigger_log):
+    """``(frame_window, note)`` for one camera: the task, or the whole file
+    with the reason when the task cannot be found."""
+    behavior_json = find_behavior_json(session_folder)
+    if behavior_json is None:
+        return None, "whole file: no behavior JSON"
+    if not Path(video_csv).exists():
+        return None, "whole file: no video CSV"
+    try:
+        window = task_frame_window(behavior_json, video_csv, trigger_log)
+    except ValueError as e:
+        return None, f"whole file: {e}"
+    return window, "task"
+
+
 def check_session(
-    behavior_videos_path, n_samples=100, time_window=None
+    behavior_videos_path, n_samples=100, use_task_window=True
 ) -> pd.DataFrame:
     """Measure and check every camera MP4 in a ``behavior-videos`` folder.
 
-    ``time_window`` (video seconds) applies to every camera.
+    With ``use_task_window``, each camera is sampled from the first trial
+    start to the last trial end (:func:`task_frame_window`), using the
+    session's ``behavior/`` JSON, the camera's CSV and the trigger log
+    (``Event_94.bin``) if present. When any is missing or the timing is
+    refused, the whole file is sampled and ``window`` says why.
 
     Returns
     -------
     pandas.DataFrame
-        One row per camera: ``camera``, ``video_path``, ``action``,
-        ``failed_checks``, ``skipped_checks``, then the ``VideoQualityQc``
-        fields. Unreadable videos get ``action`` ``exclude: unreadable``
-        and the error text in ``error``.
+        One row per camera: ``camera``, ``video_path``, ``window``,
+        ``action``, ``failed_checks``, ``skipped_checks``, then the
+        ``VideoQualityQc`` fields. Unreadable videos get ``action``
+        ``exclude: unreadable`` and the error text in ``error``.
     """
+    session_folder = Path(behavior_videos_path).parent
+    logs = sorted(session_folder.rglob("raw.harp/BehaviorEvents/Event_94.bin"))
+    trigger_log = logs[0] if logs else None
     rows = []
-    for camera, path in find_session_videos(behavior_videos_path):
-        info = {"camera": camera, "video_path": str(path)}
+    for camera, path, video_csv in find_session_videos(behavior_videos_path):
+        window, note = (None, "whole file")
+        if use_task_window:
+            window, note = _session_window(
+                session_folder, video_csv, trigger_log
+            )
+        info = {"camera": camera, "video_path": str(path), "window": note}
         try:
             qc = measure_video_quality(
-                path, n_samples=n_samples, time_window=time_window
+                path, n_samples=n_samples, frame_window=window
             )
         except (ValueError, OSError, subprocess.CalledProcessError) as e:
             info.update({"action": "exclude: unreadable", "error": str(e)})
