@@ -116,7 +116,7 @@ def run_batch_analysis(
     percentiles=None, 
     extract_clips=True,
     force_rerun=False,
-    use_trigger_log=False
+    use_trigger_log=None
 ):
     """
     Run analysis for multiple sessions in batch.
@@ -135,9 +135,9 @@ def run_batch_analysis(
         Whether to extract example video clips for each session (default: True).
     force_rerun : bool, optional
         Re-run sessions whose analysis is already complete (default: False).
-    use_trigger_log : bool, optional
-        Take video Harp times from the camera trigger log instead of the
-        video CSV; see ``generate_tongue_dfs`` (default: False).
+    use_trigger_log : bool or None, optional
+        Take video Harp times from the camera trigger log; see
+        ``generate_tongue_dfs`` (default: None, use it when present).
     """
     percentiles = percentiles or [0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0]
     save_root = Path(save_root)
@@ -384,7 +384,7 @@ def analyze_tongue_movement_quality(
 
 
 def generate_tongue_dfs(predictions_csv_path: Path, data_root: Path, tolerance=0.01,
-                        use_trigger_log=False):
+                        use_trigger_log=None):
     """
     Run the end-to-end pipeline for a single session and return:
       - the NWB object (with licks/trials annotated),
@@ -401,11 +401,13 @@ def generate_tongue_dfs(predictions_csv_path: Path, data_root: Path, tolerance=0
         Root directory containing session subfolders named like 'behavior_<...>'.
     tolerance : float, optional
         Max absolute time difference (seconds) when matching licks to kinematics (default 0.01).
-    use_trigger_log : bool, optional
-        If True, video Harp times come from the session's camera trigger log
-        (``behavior/raw.harp/BehaviorEvents/Event_94.bin``) rather than being
-        estimated from camera time where the video CSV is missing them
-        (default False). See ``video_timing_qc.correct_video_timing``.
+    use_trigger_log : bool or None, optional
+        Whether video Harp times come from the session's camera trigger log
+        (``behavior/raw.harp/BehaviorEvents/Event_94.bin``). The log gives the
+        exact time of frames the CSV has no trigger for, and its event count
+        catches corrupted frame numbers the CSV alone cannot. None (default):
+        use it if the file exists; True: require it; False: CSV only. See
+        ``video_timing_qc.correct_video_timing``.
 
     Returns
     -------
@@ -441,13 +443,17 @@ def generate_tongue_dfs(predictions_csv_path: Path, data_root: Path, tolerance=0
         raise FileNotFoundError(f"No video CSV found in {videos_folder}")
     print(f"Found video CSV: {video_csv}")
     trigger_log = None
-    if use_trigger_log:
+    if use_trigger_log is not False:
         logs = sorted(
             (Path(data_root) / session_id).rglob("raw.harp/BehaviorEvents/Event_94.bin")
         )
-        if not logs:
+        if logs:
+            trigger_log = logs[0]
+        elif use_trigger_log:
             raise FileNotFoundError(f"No camera trigger log (Event_94.bin) for {session_id}")
-        trigger_log = logs[0]
+    if trigger_log is None:
+        print("No camera trigger log used: video timing from the CSV alone")
+    else:
         print(f"Using camera trigger log: {trigger_log}")
 
     # --- 4) QC video timing and synchronize keypoints to it ---

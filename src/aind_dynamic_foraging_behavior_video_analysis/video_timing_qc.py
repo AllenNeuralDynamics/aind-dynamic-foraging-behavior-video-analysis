@@ -4,8 +4,8 @@ A video CSV has one row per saved frame (row ``i`` is video frame ``i``)
 holding the frame's Harp time (the behavior clock), the camera's frame
 number, and the camera's own clock. The acquisition workflow pairs frames
 with Harp triggers in arrival order, so the Harp column is always the
-trigger sequence in order. If frames were lost, later rows carry the times
-of earlier triggers.
+trigger sequence in order, one trigger per row, whether or not frames were
+lost. If frames were lost, later rows carry the times of earlier triggers.
 
 Checks, one question each (:func:`check_video_timing` runs them all):
 
@@ -13,25 +13,34 @@ Checks, one question each (:func:`check_video_timing` runs them all):
   as there are rows?
 - ``frame_numbers_increase``: does every frame number step forward?
 - ``camera_time_increases``: does every camera time step forward?
+- ``no_duplicate_frames``: is no frame saved twice (same frame number and
+  camera time on consecutive rows)?
 - ``harp_has_no_glitches``: is every Harp value in line with its
   neighbours?
 - ``harp_evenly_spaced``: after fixing glitches, is every Harp step one
   frame interval?
-- ``harp_matches_camera``: after fixing glitches, does each Harp step match
-  the camera step?
+- ``clock_rates_agree``: over the whole session, do Harp and camera time
+  advance at the same rate per exposure (within ``MAX_CLOCK_RATE_PPM``)?
 - ``video_frame_count``: does the video have one frame per row?
 
-Correction (:func:`correct_frame_times`):
+Decision (:func:`timing_action`, which :func:`correct_frame_times` follows):
 
-1. Fix isolated Harp glitches.
-2. No frames lost: row ``n`` was exposed by trigger ``n``, so the Harp
-   column is right. It must be evenly spaced.
+1. Fix isolated Harp glitches. Every session must pass
+   ``no_duplicate_frames``, ``harp_evenly_spaced`` and
+   ``clock_rates_agree``.
+2. No frames lost: row ``n`` was exposed by trigger ``n``; use Harp.
 3. Frames lost: frame numbers and camera time must increase. Move each
    Harp value to the row of its exposure, estimate the rows the CSV has no
    trigger for from camera time (or read them from the trigger log), and
-   require the result to match camera time.
+   require each corrected step to match the camera step.
 
 Anything else raises ``ValueError``; a partial correction is never returned.
+
+Limits of the CSV alone (the trigger log removes the first): a forward
+jump in corrupted camera metadata looks exactly like a burst of dropped
+frames; frames lost before the first saved row shift every time by a
+constant; a block of replayed frames looks like corrupted metadata that
+returns to its start (only the video can tell).
 
 Example::
 
@@ -59,6 +68,10 @@ HARP_TICK_S = 32e-6
 
 # Allowed step error, as a fraction of the frame interval.
 STEP_TOLERANCE = 0.5
+
+# Allowed whole-session rate difference between Harp and camera time.
+# Normal: +6.6 to +30.2 ppm on 17 cameras (2025-01 to 2026-01).
+MAX_CLOCK_RATE_PPM = 100
 
 
 # --- Loading -------------------------------------------------------------
@@ -232,6 +245,15 @@ def check_camera_time_increases(camera_time) -> dict:
     return _result("camera_time_increases", len(rows) == 0, message, rows)
 
 
+def check_no_duplicate_frames(frame_number, camera_time) -> dict:
+    """Is no frame saved twice (same frame number and camera time in a row)?"""
+    same_frame = np.diff(np.asarray(frame_number)) == 0
+    same_time = np.diff(np.asarray(camera_time)) == 0
+    rows = np.flatnonzero(same_frame & same_time) + 1
+    message = f"frames saved twice: {len(rows)}"
+    return _result("no_duplicate_frames", len(rows) == 0, message, rows)
+
+
 def check_harp_has_no_glitches(harp) -> dict:
     """Is every Harp value in line with its neighbours?"""
     rows = find_glitch_rows(harp)
@@ -248,10 +270,41 @@ def check_harp_evenly_spaced(harp, tolerance=STEP_TOLERANCE) -> dict:
     return _result("harp_evenly_spaced", len(rows) == 0, message, rows)
 
 
+def check_clock_rates_agree(
+    harp, camera_time, frame_number, max_ppm=MAX_CLOCK_RATE_PPM
+) -> dict:
+    """Over the session, do Harp and camera advance at the same rate?
+
+    Harp time per row (one trigger per row) against camera time per
+    exposure, from the first and last rows only, so drops do not matter.
+    Catches drift that no single step shows, e.g. many small clock steps.
+    ``count`` is the difference in ppm. Fix glitches first.
+    """
+    harp = np.asarray(harp, dtype="float64")
+    camera = np.asarray(camera_time, dtype="float64")
+    frames = np.asarray(frame_number)
+    exposures_spanned = frames[-1] - frames[0]
+    if exposures_spanned <= 0 or camera[-1] <= camera[0]:
+        return _result(
+            "clock_rates_agree", False, "first and last rows out of order"
+        )
+    harp_interval = (harp[-1] - harp[0]) / (len(harp) - 1)
+    camera_interval = (camera[-1] - camera[0]) / exposures_spanned
+    ppm = (harp_interval / camera_interval - 1) * 1e6
+    message = f"Harp runs {ppm:+.1f} ppm against camera (limit {max_ppm})"
+    return _result(
+        "clock_rates_agree", abs(ppm) <= max_ppm, message, count=round(ppm)
+    )
+
+
 def check_harp_matches_camera(
     harp, camera_time, tolerance=STEP_TOLERANCE
 ) -> dict:
-    """Does each Harp step match the camera step? Fix glitches first."""
+    """Does each corrected Harp step match the camera step?
+
+    Used on re-indexed times, where it witnesses that each row moved to the
+    right trigger. On raw Harp it fails wherever frames were dropped.
+    """
     harp = np.asarray(harp, dtype="float64")
     step_error = np.abs(np.diff(harp) - np.diff(camera_time))
     rows = np.flatnonzero(step_error > tolerance * frame_interval(harp)) + 1
@@ -272,6 +325,24 @@ def check_video_frame_count(n_rows, video_frame_count=None) -> dict:
     )
 
 
+def input_checks(frame_number, camera_time, harp) -> pd.DataFrame:
+    """Run the timing checks on plain arrays; one row per check."""
+    frames = np.asarray(frame_number)
+    camera = np.asarray(camera_time, dtype="float64")
+    harp_fixed, _ = fix_glitches(harp)
+    return pd.DataFrame(
+        [
+            check_no_frames_lost(frames),
+            check_frame_numbers_increase(frames),
+            check_camera_time_increases(camera),
+            check_no_duplicate_frames(frames, camera),
+            check_harp_has_no_glitches(harp),
+            check_harp_evenly_spaced(harp_fixed),
+            check_clock_rates_agree(harp_fixed, camera, frames),
+        ]
+    )
+
+
 def check_video_timing(timing, video_frame_count=None) -> pd.DataFrame:
     """Run every check on one camera.
 
@@ -288,38 +359,42 @@ def check_video_timing(timing, video_frame_count=None) -> pd.DataFrame:
         One row per check: ``check``, ``passed`` (None if skipped),
         ``count``, ``message`` and ``rows`` (first 100 offending rows).
     """
-    frames = timing["frame_number"].to_numpy()
-    camera = timing["camera_time"].to_numpy()
-    harp = timing["harp_time_raw"].to_numpy()
-    harp_fixed, _ = fix_glitches(harp)
-    return pd.DataFrame(
-        [
-            check_no_frames_lost(frames),
-            check_frame_numbers_increase(frames),
-            check_camera_time_increases(camera),
-            check_harp_has_no_glitches(harp),
-            check_harp_evenly_spaced(harp_fixed),
-            check_harp_matches_camera(harp_fixed, camera),
-            check_video_frame_count(len(timing), video_frame_count),
-        ]
+    checks = input_checks(
+        timing["frame_number"].to_numpy(),
+        timing["camera_time"].to_numpy(),
+        timing["harp_time_raw"].to_numpy(),
     )
+    frame_count = check_video_frame_count(len(timing), video_frame_count)
+    return pd.concat([checks, pd.DataFrame([frame_count])], ignore_index=True)
+
+
+# Checks every session must pass, before anything else is decided.
+ALWAYS_REQUIRED = [
+    "no_duplicate_frames",
+    "harp_evenly_spaced",
+    "clock_rates_agree",
+]
+# Checks needed to locate lost frames.
+REQUIRED_TO_REINDEX = ["frame_numbers_increase", "camera_time_increases"]
 
 
 def timing_action(checks) -> str:
-    """Say what :func:`correct_frame_times` will do, from the check table.
+    """Decide what to do from the check table.
 
     One of ``use harp as written``, ``fix glitches``, ``re-index`` or
-    ``refuse: <check>``. ``re-index`` can still be refused after
-    correcting, if the result does not match camera time.
+    ``refuse: <check>``. :func:`correct_frame_times` follows this decision;
+    ``re-index`` is still refused afterwards if a corrected step does not
+    match the camera step.
     """
     passed = dict(zip(checks["check"], checks["passed"]))
+    for check in ALWAYS_REQUIRED:
+        if not passed[check]:
+            return f"refuse: {check}"
     if passed["no_frames_lost"]:
-        if not passed["harp_evenly_spaced"]:
-            return "refuse: harp_evenly_spaced"
         if not passed["harp_has_no_glitches"]:
             return "fix glitches"
         return "use harp as written"
-    for check in ["frame_numbers_increase", "camera_time_increases"]:
+    for check in REQUIRED_TO_REINDEX:
         if not passed[check]:
             return f"refuse: {check}"
     return "re-index"
@@ -368,8 +443,9 @@ def correct_frame_times(
     """Give each saved frame the time of the trigger that exposed it.
 
     Plain arrays in, plain arrays out; knows nothing about CSVs or Harp.
-    Assumes one trigger per exposure, and that the first frame is the
-    first exposure.
+    Runs :func:`input_checks` on ``trigger_times[:n]`` and follows
+    :func:`timing_action`. Assumes one trigger per exposure, and that the
+    first frame is the first exposure.
 
     Parameters
     ----------
@@ -404,21 +480,23 @@ def correct_frame_times(
         raise ValueError(
             "Need >= 3 frames, matching camera times, one trigger per frame"
         )
+    checks = input_checks(frames, camera, np.asarray(trigger_times)[:n])
+    action = timing_action(checks)
+    if action.startswith("refuse"):
+        failed = checks.set_index("check").loc[action.split(": ")[1]]
+        raise ValueError(f"{failed.name} failed: {failed['message']}")
+
     triggers, glitches = fix_glitches(trigger_times)
     k = frames - frames[0]
     source = np.full(n, "original", dtype=object)
-
-    if check_no_frames_lost(frames)["passed"]:
-        times = triggers[:n]
-        _require(check_harp_evenly_spaced(times))
-    else:
-        _require(check_frame_numbers_increase(frames))
-        _require(check_camera_time_increases(camera))
+    if action == "re-index":
         times = reindex_to_exposures(frames, triggers)
         source[k != np.arange(n)] = "reindexed"
         source[np.isnan(times)] = "estimated_camera_fit"
         times = estimate_missing_from_camera(times, camera, tail_fit_window_s)
         _require(check_harp_matches_camera(times, camera))
+    else:
+        times = triggers[:n]
     source[np.isin(k, glitches)] = "glitch_interpolated"
     return times, source
 
@@ -429,8 +507,10 @@ def correct_video_timing(
     """Return ``timing`` with corrected Harp time per frame.
 
     Runs :func:`correct_frame_times` on the CSV's Harp column, or on the
-    Harp trigger log if ``trigger_times`` is given (after checking the log
-    belongs to this CSV).
+    Harp trigger log if ``trigger_times`` is given. The log must have one
+    event per exposure (first to last frame number) and match the CSV's
+    Harp column; this also catches forward jumps in corrupted frame
+    numbers, which the CSV alone cannot tell from dropped frames.
 
     Parameters
     ----------
@@ -453,11 +533,13 @@ def correct_video_timing(
         triggers = harp_raw
     else:
         triggers = np.asarray(trigger_times, dtype="float64")
-        n_needed = max(len(timing), int(frames[-1] - frames[0] + 1))
-        if len(triggers) < n_needed:
+        n_exposures = int(frames[-1] - frames[0] + 1)
+        if len(triggers) != n_exposures:
             raise ValueError(
-                f"Trigger log has {len(triggers)} events, fewer than the "
-                f"{n_needed} exposures"
+                f"Trigger log has {len(triggers)} events but the frame "
+                f"numbers span {n_exposures} exposures: frames lost before "
+                f"the first or after the last saved row, or corrupted "
+                f"frame numbers"
             )
         mismatch = np.abs(triggers[: len(timing)] - harp_raw).max()
         if mismatch > HARP_TICK_S:
