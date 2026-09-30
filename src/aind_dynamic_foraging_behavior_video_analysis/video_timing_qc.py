@@ -16,18 +16,23 @@ The acquisition workflow pairs frames with Harp trigger times in arrival
 order (``rx:Zip``), so after a dropped frame every later row carries the
 Harp time of an earlier trigger. Separately, a single Harp value is
 sometimes wrong (typically ~983 ms early). This module detects both, and
-corrects them:
+corrects them. Isolated Harp glitches get the midpoint of their
+neighbours; then it depends on whether frames were lost, i.e. whether the
+first and last frame numbers span more exposures than there are rows:
 
-1. Glitch rows get the midpoint of their neighbours.
-2. Each row gets the trigger time of its own exposure, found from the
-   frame number: ``k = frame_number - frame_number[0]``.
-3. Rows whose trigger was never written to the CSV (the last ones in a
-   session with drops) are estimated from camera time with a linear fit,
-   or read from the Harp trigger log (``Event_94.bin``) if one is given.
+- **No frames lost:** row ``i`` was exposed by trigger ``i``, so the Harp
+  column is already right. Frame numbers and camera time are not used
+  (they can be corrupted while Harp is fine). The Harp column must be
+  evenly spaced; if it is not (e.g. a Harp clock step), the session is
+  refused.
+- **Frames lost:** each row gets the trigger time of its own exposure,
+  ``k = frame_number - frame_number[0]``. Rows whose trigger was never
+  written to the CSV (the last ones) are estimated from camera time, or
+  read from the Harp trigger log (``Event_94.bin``) if one is given. The
+  result must agree with camera time step by step.
 
-Only Harp time is ever changed; camera time is treated as the trusted
-clock. Corrections that fail their post-checks raise ``ValueError`` rather
-than return partially corrected times.
+Only Harp time is ever changed. Corrections that fail their checks raise
+``ValueError`` rather than return partially corrected times.
 
 Example
 -------
@@ -131,6 +136,28 @@ def read_harp_trigger_log(path) -> np.ndarray:
     return seconds + ticks * HARP_TICK_S
 
 
+def frame_interval(times) -> float:
+    """Return the typical step of an evenly spaced time series.
+
+    The mean of the steps within 25% of the median step. Harp steps
+    alternate by one 32 us tick around the true interval, so the median
+    alone is off by half a tick; outliers (glitches, drops) are excluded.
+
+    Parameters
+    ----------
+    times : array-like
+        Times in seconds.
+
+    Returns
+    -------
+    float
+        Frame interval in seconds.
+    """
+    step = np.diff(np.asarray(times, dtype="float64"))
+    median = np.median(step)
+    return float(step[np.abs(step - median) < 0.25 * median].mean())
+
+
 def find_glitch_rows(trigger_times, ifi, threshold=0.5) -> np.ndarray:
     """Return isolated bad values in an evenly spaced trigger sequence.
 
@@ -165,6 +192,28 @@ def find_glitch_rows(trigger_times, ifi, threshold=0.5) -> np.ndarray:
     return rows[isolated]
 
 
+def find_irregular_steps(trigger_times, ifi, threshold=0.5) -> np.ndarray:
+    """Return indices whose step from the previous value is not ``ifi``.
+
+    Parameters
+    ----------
+    trigger_times : array-like
+        Trigger times in seconds, glitches already fixed.
+    ifi : float
+        Frame interval in seconds.
+    threshold : float
+        Allowed deviation as a fraction of ``ifi``.
+
+    Returns
+    -------
+    numpy.ndarray
+        Index ``r`` for each step ``r - 1 -> r`` off by more than
+        ``threshold * ifi``.
+    """
+    step = np.diff(np.asarray(trigger_times, dtype="float64"))
+    return np.flatnonzero(np.abs(step - ifi) > threshold * ifi) + 1
+
+
 def check_video_timing(timing, threshold=0.5, video_frame_count=None) -> dict:
     """Check one camera's per-frame timestamps and classify them.
 
@@ -182,15 +231,22 @@ def check_video_timing(timing, threshold=0.5, video_frame_count=None) -> dict:
     Returns
     -------
     dict
-        JSON-serialisable summary. ``qc_class`` is the first match of:
+        JSON-serialisable summary. ``n_frames_dropped`` is exposures
+        (from the first and last frame numbers) minus rows. ``qc_class``
+        is the first match of:
 
-        - ``frame_order_error``: a frame number or camera time steps back
-          or repeats.
         - ``transcode_mismatch``: video and CSV frame counts differ.
-        - ``frame_drops``: frame numbers skip (correctable).
-        - ``clock_disagreement``: Harp and camera steps disagree where
-          neither a drop nor a glitch explains it.
-        - ``harp_glitch``: isolated bad Harp rows only (correctable).
+        - ``frame_order_error``: more rows than exposures, or frames were
+          dropped and frame numbers or camera time step back or repeat.
+        - ``harp_irregular``: no frames dropped, but the Harp column is
+          not evenly spaced after fixing glitches (e.g. a Harp clock
+          step). Not correctable.
+        - ``camera_metadata_error``: no frames dropped and Harp is evenly
+          spaced, but frame numbers or camera time are inconsistent.
+          Correctable: the Harp column is used as written.
+        - ``harp_glitch``: no frames dropped; isolated bad Harp rows only
+          (correctable).
+        - ``frame_drops``: frames dropped (correctable).
         - ``ok``.
     """
     harp = timing["harp_time_raw"].to_numpy()
@@ -200,7 +256,9 @@ def check_video_timing(timing, threshold=0.5, video_frame_count=None) -> dict:
     if n_rows < 3:
         raise ValueError(f"Need at least 3 rows, got {n_rows}")
 
-    ifi = float(np.median(np.diff(cam)))
+    # Harp is evenly spaced whether or not frames were dropped, and does
+    # not depend on the camera metadata, which can be corrupted.
+    ifi = frame_interval(harp)
     frame_step = np.diff(frames)
     gap_rows = np.flatnonzero(frame_step > 1) + 1
     frame_order_rows = np.flatnonzero(frame_step <= 0) + 1
@@ -216,15 +274,32 @@ def check_video_timing(timing, threshold=0.5, video_frame_count=None) -> dict:
         np.union1d(clock_flag_rows, harp_backward_rows), explained
     )
 
+    harp_fixed = harp.copy()
+    harp_fixed[glitch_rows] = (
+        harp[glitch_rows - 1] + harp[glitch_rows + 1]
+    ) / 2
+    irregular_rows = find_irregular_steps(harp_fixed, ifi, threshold)
+
     n_exposures = int(frames[-1] - frames[0] + 1)
-    if len(frame_order_rows) or len(camera_backward_rows):
-        qc_class = "frame_order_error"
-    elif video_frame_count is not None and video_frame_count != n_rows:
+    n_lost = n_exposures - n_rows
+    camera_metadata_bad = bool(
+        len(frame_order_rows)
+        or len(camera_backward_rows)
+        or len(gap_rows)
+        or len(unexplained_rows)
+    )
+    if video_frame_count is not None and video_frame_count != n_rows:
         qc_class = "transcode_mismatch"
-    elif len(gap_rows):
+    elif n_lost < 0 or (
+        n_lost > 0 and (len(frame_order_rows) or len(camera_backward_rows))
+    ):
+        qc_class = "frame_order_error"
+    elif n_lost > 0:
         qc_class = "frame_drops"
-    elif len(unexplained_rows):
-        qc_class = "clock_disagreement"
+    elif len(irregular_rows):
+        qc_class = "harp_irregular"
+    elif camera_metadata_bad:
+        qc_class = "camera_metadata_error"
     elif len(glitch_rows):
         qc_class = "harp_glitch"
     else:
@@ -237,12 +312,13 @@ def check_video_timing(timing, threshold=0.5, video_frame_count=None) -> dict:
         "ifi_s": ifi,
         "fps": 1 / ifi,
         "n_frame_gaps": len(gap_rows),
-        "n_frames_dropped": n_exposures - n_rows,
+        "n_frames_dropped": n_lost,
         "first_gap_row": int(gap_rows[0]) if len(gap_rows) else None,
         "n_frame_order_errors": len(frame_order_rows),
         "n_harp_backward": len(harp_backward_rows),
         "n_camera_backward": len(camera_backward_rows),
         "glitch_rows": glitch_rows.tolist(),
+        "harp_irregular_rows": irregular_rows[:100].tolist(),
         "n_clock_flags": len(clock_flag_rows),
         "n_unexplained_flags": len(unexplained_rows),
         "unexplained_rows": unexplained_rows[:100].tolist(),
@@ -265,17 +341,24 @@ def correct_frame_times(
 ):
     """Assign each saved frame the time of the trigger that exposed it.
 
-    Hardware-agnostic core of the correction. Frame ``i`` was exposed by
-    trigger ``k = frame_number[i] - frame_number[0]``, so its time is
-    ``trigger_times[k]``. Steps:
+    Hardware-agnostic core of the correction. First, isolated glitches in
+    ``trigger_times`` are replaced by the midpoint of their neighbours.
+    Then, with ``lost`` = exposures (from the first and last frame
+    numbers) minus frames:
 
-    1. Fix isolated glitches in ``trigger_times`` (midpoint of neighbours).
-    2. Re-index: ``times[i] = trigger_times[k[i]]`` wherever ``k[i]`` is
-       covered by ``trigger_times``.
-    3. Estimate the rest from a linear fit of time on ``camera_time`` over
-       the last ``tail_fit_window_s`` of re-indexed frames.
-    4. Post-check the result against ``camera_time`` (see
-       :func:`post_check_failures`).
+    - ``lost == 0``: frame ``i`` was exposed by trigger ``i``, so
+      ``times = trigger_times[:n]``. Frame numbers and camera time are not
+      used beyond the count. The times must be evenly spaced (see
+      :func:`find_irregular_steps`).
+    - ``lost > 0``: frame ``i`` was exposed by trigger
+      ``k = frame_number[i] - frame_number[0]``, so
+      ``times[i] = trigger_times[k]`` wherever ``trigger_times`` covers
+      ``k``; the rest are estimated from a linear fit of time on
+      ``camera_time`` over the last ``tail_fit_window_s`` of re-indexed
+      frames. Frame numbers and camera time must strictly increase, and
+      the result must track ``camera_time`` (see
+      :func:`post_check_failures`).
+    - ``lost < 0``: refused.
 
     Assumes one trigger per exposure and that the first frame is the first
     exposure.
@@ -283,9 +366,9 @@ def correct_frame_times(
     Parameters
     ----------
     frame_number : array-like of int
-        Camera exposure counter per saved frame; must strictly increase.
+        Camera exposure counter per saved frame.
     camera_time : array-like of float
-        Camera clock per saved frame, in seconds; must strictly increase.
+        Camera clock per saved frame, in seconds.
     trigger_times : array-like of float
         Trigger times in order, in seconds on the target clock, starting
         with the first frame's trigger. May be shorter than the number of
@@ -307,8 +390,9 @@ def correct_frame_times(
     Raises
     ------
     ValueError
-        If frame numbers or camera times do not strictly increase, or the
-        corrected times fail the post-checks.
+        If there are more frames than exposures; if frames were lost and
+        frame numbers or camera times do not strictly increase; or if the
+        corrected times fail their checks.
     """
     frames = np.asarray(frame_number)
     cam = np.asarray(camera_time, dtype="float64")
@@ -316,16 +400,36 @@ def correct_frame_times(
     n_frames = len(frames)
     if len(cam) != n_frames or n_frames < 3:
         raise ValueError("Need matching frame_number and camera_time, >= 3")
-    if not (np.diff(frames) > 0).all() or not (np.diff(cam) > 0).all():
-        raise ValueError("Frame numbers and camera times must increase")
-    ifi = float(np.median(np.diff(cam)))
-    k = frames - frames[0]  # trigger index of each frame's exposure
-
+    if len(triggers) < n_frames:
+        raise ValueError("Need at least one trigger per frame")
+    ifi = frame_interval(triggers[:n_frames])
     glitches = find_glitch_rows(triggers, ifi, threshold)
     triggers[glitches] = (triggers[glitches - 1] + triggers[glitches + 1]) / 2
-
-    times = np.full(n_frames, np.nan)
+    k = frames - frames[0]  # trigger index of each frame's exposure
+    lost = int(k[-1]) + 1 - n_frames
     source = np.full(n_frames, "original", dtype=object)
+
+    if lost < 0:
+        raise ValueError(
+            f"{-lost} more frames than exposures; frame numbers unusable"
+        )
+    if lost == 0:
+        times = triggers[:n_frames].copy()
+        source[glitches[glitches < n_frames]] = "glitch_interpolated"
+        irregular = find_irregular_steps(times, ifi, threshold)
+        if len(irregular):
+            raise ValueError(
+                f"Trigger times not evenly spaced at {len(irregular)} rows "
+                f"(first at row {irregular[0]}), e.g. a Harp clock step"
+            )
+        return times, source
+
+    if not (np.diff(frames) > 0).all() or not (np.diff(cam) > 0).all():
+        raise ValueError(
+            "Frames were lost, and frame numbers or camera times do not "
+            "increase, so lost frames cannot be located"
+        )
+    times = np.full(n_frames, np.nan)
     known = k < len(triggers)
     times[known] = triggers[k[known]]
     source[known & (k != np.arange(n_frames))] = "reindexed"

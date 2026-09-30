@@ -142,7 +142,7 @@ class VideoTimingQCTest(unittest.TestCase):
     def test_consecutive_bad_rows_refused(self):
         """Two bad rows in a row are not a glitch and are not corrected."""
         timing, qc, _ = self.load(trigger_errors={500: -0.983, 501: -0.983})
-        self.assertEqual(qc["qc_class"], "clock_disagreement")
+        self.assertEqual(qc["qc_class"], "harp_irregular")
         self.assertEqual(qc["glitch_rows"], [])
         with self.assertRaises(ValueError):
             vtq.correct_video_timing(timing)
@@ -210,17 +210,60 @@ class VideoTimingQCTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "post-checks"):
             vtq.correct_video_timing(timing)
 
-    def test_frame_order_error(self):
-        """A repeated frame number is not correctable."""
+    def test_harp_clock_step_refused(self):
+        """Harp shifting back ~2.2 ms and staying there is refused."""
+        timing, _, _ = self.load()
+        timing.loc[1500:, "harp_time_raw"] -= 0.0022
+        qc = vtq.check_video_timing(timing)
+        self.assertEqual(qc["qc_class"], "harp_irregular")
+        self.assertEqual(qc["harp_irregular_rows"], [1500])
+        with self.assertRaisesRegex(ValueError, "evenly spaced"):
+            vtq.correct_video_timing(timing)
+
+    def corrupt_metadata(self, timing, start=1000, stop=1400, offset=1048):
+        """Shift frame number and camera time together, as in 763590."""
+        rows = timing.index[start:stop]
+        timing.loc[rows, "frame_number"] += offset
+        timing.loc[rows, "camera_time"] += offset * IFI
+        return timing
+
+    def test_camera_metadata_error_uses_harp(self):
+        """Corrupted frame numbers with no frames lost: Harp as written."""
+        timing, _, _ = self.load(trigger_errors={2000: -0.983})
+        timing = self.corrupt_metadata(timing)
+        qc = vtq.check_video_timing(timing)
+        self.assertEqual(qc["qc_class"], "camera_metadata_error")
+        self.assertEqual(qc["n_frames_dropped"], 0)
+        fixed = vtq.correct_video_timing(timing)
+        expected = timing["harp_time_raw"].to_numpy().copy()
+        expected[2000] = (expected[1999] + expected[2001]) / 2
+        np.testing.assert_array_equal(fixed["harp_time"], expected)
+        self.assertEqual(
+            fixed["harp_source"].value_counts().to_dict(),
+            {"original": 2999, "glitch_interpolated": 1},
+        )
+
+    def test_frame_order_error_with_drops_refused(self):
+        """Corrupted frame numbers plus real drops cannot be re-indexed."""
+        timing, _, _ = self.load(dropped=[2500])
+        timing = self.corrupt_metadata(timing)
+        self.assertEqual(
+            vtq.check_video_timing(timing)["qc_class"], "frame_order_error"
+        )
+        with self.assertRaisesRegex(ValueError, "cannot be located"):
+            vtq.correct_video_timing(timing)
+
+    def test_more_rows_than_exposures_refused(self):
+        """A repeated frame (more rows than exposures) is refused."""
         path, _ = simulate(self.tmp)
         lines = path.read_text().splitlines()
-        lines[50] = lines[49]
+        lines.insert(50, lines[49])
         path.write_text("\n".join(lines) + "\n")
         timing = vtq.load_video_timing(path)
         self.assertEqual(
             vtq.check_video_timing(timing)["qc_class"], "frame_order_error"
         )
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(ValueError, "more frames than exposures"):
             vtq.correct_video_timing(timing)
 
     def test_transcode_mismatch(self):
