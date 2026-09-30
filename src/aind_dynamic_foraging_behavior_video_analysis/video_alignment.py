@@ -28,6 +28,16 @@ core relationships are::
     video_time   = session_time      + offset                      # session_time event  -> video_time
     session_time = behavior_time     - first_go_cue_time           # behavior_time        -> session_time
 
+Caveat: dropped frames
+----------------------
+These conversions assume Harp time advances one frame interval per saved
+video frame. That holds for the raw CSV Harp column even when frames were
+dropped (the acquisition workflow pairs frames with triggers in arrival
+order), but then events land on the wrong frames. After correcting Harp
+time with :mod:`video_timing_qc`, map events to frames with
+``numpy.searchsorted`` on the corrected ``harp_time`` instead of by
+subtraction.
+
 Example
 -------
 First frame at ``behavior_time`` 100.0 s, first go cue at 105.25 s, and a spike of

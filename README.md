@@ -18,8 +18,8 @@ One test: **would another AIND project doing tongue kinematics want this, unchan
   `tongue_quality_stats.json`), runs in the batch pipeline, or is generic to
   tongue-kinematics sessions — keypoint I/O and filtering, segmentation,
   aggregation, trial/lick annotation, QC stats, lick detection, video/NWB
-  lookup, clip extraction, raster/PSTH primitives. It must stay stable:
-  consuming capsules install it from `main` with no version pin.
+  lookup, video timing QC, clip extraction, raster/PSTH primitives. It must
+  stay stable: consuming capsules pin a commit and move the pin deliberately.
 - **Not here:** analysis built *on top of* the intermediates for one
   scientific question — encoding models, per-unit result registries, spatial
   topography, manuscript figure styling. That lives in the consuming repo
@@ -35,6 +35,54 @@ One test: **would another AIND project doing tongue kinematics want this, unchan
 Module layering is spelled out in each module's docstring
 (`kinematics/tongue_kinematics_utils.py`, `kinematics/tongue_lickometer_utils.py`,
 `ephys/tongue_ephys.py`).
+
+
+## Video timing QC
+
+`video_timing_qc` checks and corrects the Harp (behavior-clock) time of every
+frame in a behavior video CSV. The acquisition workflow pairs frames with
+Harp triggers in arrival order, so when frames are dropped every later frame
+carries an earlier trigger's time (minutes off by the end in affected
+sessions); single Harp values can also be wrong (~983 ms glitches).
+
+```python
+from aind_dynamic_foraging_behavior_video_analysis import video_timing_qc as vtq
+
+timing = vtq.load_video_timing("behavior-videos/bottom_camera.csv")  # either layout
+checks = vtq.check_video_timing(timing)   # one row per check: passed, count, message, rows
+vtq.timing_action(checks)                 # use harp as written / fix glitches / re-index / refuse: <check>
+fixed = vtq.correct_video_timing(timing)  # adds harp_time and harp_source; raises if refused
+fixed = vtq.correct_video_timing(timing, trigger_times=vtq.read_harp_trigger_log("Event_94.bin"))
+```
+
+The LP pipeline (`integrate_keypoints_with_video_time`, `generate_tongue_dfs`,
+`run_batch_analysis`) uses it: keypoint `time_raw` is the corrected Harp time,
+the session's trigger log is used when present, and sessions whose timing
+cannot be trusted (e.g. a Harp clock step) raise `ValueError` and are skipped
+by the batch. The checks, the decision, the evidence and the known limits are
+in `VIDEO_TIMING_QC_PLAN.md`; `examples/video_timing_qc_validation.ipynb`
+shows it on real sessions against the trigger log.
+
+
+## Changes
+
+### 0.1.0 (2026-09-30)
+
+- **New:** `video_timing_qc` (see above).
+- **Changed behavior:** `integrate_keypoints_with_video_time` uses it instead of
+  its old timing QC. Keypoint `time_raw` changes for sessions with dropped
+  frames (up to minutes) or Harp glitches (the row after a glitch by µs);
+  sessions with no problems are unchanged. Sessions with a Harp clock step are
+  refused. Header-row (New/AIND) video CSVs now load instead of crashing.
+- **Changed return value:** the second value returned by
+  `integrate_keypoints_with_video_time` is the corrected timing table
+  (`harp_time_raw`, `frame_number`, `camera_time`, `harp_time`,
+  `harp_source`) instead of `Behav_Time`/`Frame`/`Camera_Time`/`Gain`/`Exposure`.
+- **New arguments:** `generate_tongue_dfs` and `run_batch_analysis` take
+  `use_trigger_log` (default: use `Event_94.bin` when present) and
+  `camera_name` (default `"BottomCamera"`, as before).
+- `generate_tongue_dfs` raises `FileNotFoundError` when no video CSV is found
+  (was `AttributeError`).
 
 
 ## Usage
@@ -58,8 +106,8 @@ To use the software, in the root directory, run
 pip install -e .
 ```
 
-The core install (numpy, pandas) covers `video_alignment` and
-`kinematics/tongue_lickometer_utils`. For the kinematics, ephys, NWB and
+The core install (numpy, pandas) covers `video_alignment`,
+`video_timing_qc` and `kinematics/tongue_lickometer_utils`. For the kinematics, ephys, NWB and
 video-clip modules, install the `kinematics` extra:
 ```bash
 pip install -e ".[kinematics]"

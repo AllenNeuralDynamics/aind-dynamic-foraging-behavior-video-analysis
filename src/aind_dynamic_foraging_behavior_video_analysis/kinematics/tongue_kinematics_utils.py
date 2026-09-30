@@ -36,6 +36,8 @@ import os
 import re
 from pathlib import Path
 
+from aind_dynamic_foraging_behavior_video_analysis import video_timing_qc
+
 
 ### ANALYSIS ###
 def select_percentile_movements(
@@ -1152,109 +1154,48 @@ def plot_filtering_steps(tongue_masked, kinematics_filter,
 
 
 ### LOADING DATA ###
-def integrate_keypoints_with_video_time(video_csv_path, keypoint_dfs):
+def integrate_keypoints_with_video_time(video_csv_path, keypoint_dfs,
+                                        trigger_log_path=None):
     """
-    Imports, checks, and preprocesses video CSV, then trims keypoint data to match video length.
+    Load the video CSV, QC and correct its Harp times, and put the keypoints
+    on the corrected clock.
+
+    Timing QC and correction are done by ``video_timing_qc``: dropped frames
+    and single-row Harp glitches are corrected; anything else raises.
 
     Parameters:
-    - video_csv_path: Path to the original bonsai video acquisition CSV
+    - video_csv_path: Path to the bonsai video acquisition CSV (either layout)
     - keypoint_dfs: Dictionary of dataframes from load_keypoints_from_csv
+    - trigger_log_path: Optional path to the Harp camera trigger log
+      (behavior/raw.harp/BehaviorEvents/Event_94.bin). If given, Harp times
+      come from the log; otherwise rows whose trigger is missing from the
+      CSV are estimated from camera time.
 
     Returns:
-    - keypoint_dfs_trimmed: Trimmed keypoint dataframes
-    - video_csv_trimmed: Processed and trimmed video CSV dataframe
-    - keypoint_timebase: Timebase for kinematics data, in time aligned to NWB time.
+    - keypoint_dfs_trimmed: Trimmed keypoint dataframes, with 'time' and
+      'time_raw' (corrected Harp time) columns
+    - video_csv_trimmed: Timing dataframe from
+      video_timing_qc.correct_video_timing, trimmed to match
     """
+    # Step 1: Load, check, and correct the video timing
+    timing = video_timing_qc.load_video_timing(video_csv_path)
+    checks = video_timing_qc.check_video_timing(timing)
+    failed = checks[checks["passed"].eq(False)]
+    print(f"Video QC: {video_timing_qc.timing_action(checks)} ({len(timing)} rows)")
+    for _, check in failed.iterrows():
+        print(f"  failed {check['check']}: {check['message']}")
+    trigger_times = None
+    if trigger_log_path is not None:
+        trigger_times = video_timing_qc.read_harp_trigger_log(trigger_log_path)
+    video_csv = video_timing_qc.correct_video_timing(
+        timing, trigger_times=trigger_times
+    )
+    print(
+        "Video QC: Harp time sources "
+        f"{video_csv['harp_source'].value_counts().to_dict()}"
+    )
 
-    # Step 1: Load video CSV
-    video_csv = pd.read_csv(video_csv_path, names=['Behav_Time', 'Frame', 'Camera_Time', 'Gain', 'Exposure'])
-    
-    # Step 2: Convert Camera_Time to seconds
-    video_csv['Camera_Time'] = video_csv['Camera_Time'] / 1e9
-
-    # Step 3: Quality control checks
-    def check_frame_monotonicity(df):
-        """Ensure frame numbers increase strictly by 1."""
-        frame_diff = df['Frame'].diff().dropna()
-        if not (frame_diff == 1).all():
-            print("Warning: Non-monotonic frame numbering detected.")
-            print(df.loc[frame_diff[frame_diff != 1].index])
-        else:
-            print("Video QC: Frame numbers are sequential with no gaps.")
-
-    check_frame_monotonicity(video_csv)
-
-    def qc_and_fix_timing(df,
-                      time_col='Behav_Time',
-                      camera_col='Camera_Time',
-                      expected_interval=1/500,
-                      tol_multiplier=2,
-                      bracket_tol=0.1,
-                      auto_fix=True):
-        """
-        QC and fix timing inconsistencies, including:
-        - Large timing differences
-        - Backward-in-time frames
-
-        If auto_fix=True, any isolated bad frame is fixed by interpolation if
-        bracketed by good frames.
-        """
-        behav_diff = df[time_col].diff()
-        cam_diff   = df[camera_col].diff()
-        delta      = (behav_diff - cam_diff).abs()
-
-        thresh = tol_multiplier * expected_interval
-        flagged_large = set(delta[delta > thresh].index)
-        flagged_backwards = set(behav_diff[behav_diff < 0].index) | set(cam_diff[cam_diff < 0].index)
-        flagged = sorted(flagged_large | flagged_backwards)
-
-        report = pd.DataFrame({
-            'Behav_Time':       df.loc[flagged, time_col],
-            'Camera_Time':      df.loc[flagged, camera_col],
-            'Behav_Time_Diff':  behav_diff.loc[flagged],
-            'Camera_Time_Diff': cam_diff.loc[flagged],
-            'Time_Diff':        delta.loc[flagged],
-            'Backward_Flag':    [idx in flagged_backwards for idx in flagged]
-        })
-
-        if report.empty:
-            print("Video QC: Timing differences are within expected range.")
-        else:
-            print("Warning: Timing differences or backward frames detected.")
-            print(report.to_string())
-
-        if auto_fix:
-            for idx in flagged:
-                if idx <= 0 or idx >= len(df) - 1:
-                    continue  # skip edges
-
-                behav_err = (abs(behav_diff.loc[idx] - expected_interval) > thresh) or (behav_diff.loc[idx] < 0)
-                cam_err   = (abs(cam_diff.loc[idx]   - expected_interval) > thresh) or (cam_diff.loc[idx] < 0)
-                if behav_err ^ cam_err:  # only one column is wrong
-                    bad_col = time_col if behav_err else camera_col
-                    t_prev  = df.at[idx-1, bad_col]
-                    t_next  = df.at[idx+1, bad_col]
-                    if abs((t_next - t_prev) - 2*expected_interval) < bracket_tol:
-                        df.at[idx, bad_col] = 0.5 * (t_prev + t_next)
-                        print(f"  Fixed idx={idx} in '{bad_col}' by interpolation")
-                    else:
-                        print(f"  Skipped idx={idx}: bracket check failed")
-                else:
-                    print(f"  Ambiguous error at idx={idx}, skipping fix")
-
-        return df
-
-
-    qc_and_fix_timing(video_csv,
-                  time_col='Behav_Time',
-                  camera_col='Camera_Time',
-                  expected_interval=1/500,
-                  tol_multiplier=2,
-                  bracket_tol=0.1,
-                  auto_fix=True)
-
-
-    # Step 4: Trim kinematics timebase to match video
+    # Step 2: Trim kinematics timebase to match video
     def trim_kinematics_timebase_to_match(keypoint_dfs, video_csv):
         LP_samples = len(keypoint_dfs[list(keypoint_dfs.keys())[0]])
         video_samples = len(video_csv)
@@ -1276,9 +1217,9 @@ def integrate_keypoints_with_video_time(video_csv_path, keypoint_dfs):
         return keypoint_dfs_trimmed, video_csv_trimmed
 
     keypoint_dfs_trimmed, video_csv_trimmed = trim_kinematics_timebase_to_match(keypoint_dfs, video_csv)
-    keypoint_timebase = video_csv_trimmed['Behav_Time']
+    keypoint_timebase = video_csv_trimmed['harp_time']
 
-    # Step 5: Add 'time' column to each keypoint dataframe
+    # Step 3: Add 'time' column to each keypoint dataframe
     for key in keypoint_dfs_trimmed.keys():
         keypoint_dfs_trimmed[key].insert(0, 'time', keypoint_timebase - keypoint_timebase.iloc[0])
         keypoint_dfs_trimmed[key].insert(1, 'time_raw', keypoint_timebase)
