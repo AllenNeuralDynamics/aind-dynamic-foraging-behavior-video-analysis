@@ -80,6 +80,16 @@ def write_trigger_log(path, triggers):
     msg.tofile(path)
 
 
+def failed(checks):
+    """Names of the checks that failed."""
+    return set(checks.loc[checks["passed"].eq(False), "check"])
+
+
+def check(checks, name):
+    """One check's row as a dict."""
+    return checks.set_index("check").loc[name].to_dict()
+
+
 class VideoTimingQCTest(unittest.TestCase):
     """Checks and corrections on simulated sessions."""
 
@@ -93,17 +103,19 @@ class VideoTimingQCTest(unittest.TestCase):
         self._tmp.cleanup()
 
     def load(self, **kwargs):
-        """Simulate, load, and check; return timing, qc and triggers."""
+        """Simulate, load, and check; return timing, checks and triggers."""
         path, triggers = simulate(self.tmp, **kwargs)
         timing = vtq.load_video_timing(path)
         return timing, vtq.check_video_timing(timing), triggers
 
     def test_clean(self):
-        """No problems: ok, and correction leaves Harp unchanged."""
-        timing, qc, _ = self.load()
-        self.assertEqual(qc["qc_class"], "ok")
-        self.assertEqual(qc["n_clock_flags"], 0)
-        self.assertAlmostEqual(qc["ifi_s"], IFI, places=6)
+        """No problems: every check passes and Harp is used as written."""
+        timing, checks, _ = self.load()
+        self.assertEqual(failed(checks), set())
+        self.assertEqual(vtq.timing_action(checks), "use harp as written")
+        self.assertAlmostEqual(
+            vtq.frame_interval(timing["harp_time_raw"]), IFI, places=6
+        )
         fixed = vtq.correct_video_timing(timing)
         np.testing.assert_array_equal(
             fixed["harp_time"], timing["harp_time_raw"]
@@ -123,10 +135,10 @@ class VideoTimingQCTest(unittest.TestCase):
 
     def test_glitch(self):
         """A ~983 ms early row is found alone and interpolated."""
-        timing, qc, triggers = self.load(trigger_errors={500: -0.983})
-        self.assertEqual(qc["qc_class"], "harp_glitch")
-        self.assertEqual(qc["glitch_rows"], [500])
-        self.assertEqual(qc["n_unexplained_flags"], 0)
+        timing, checks, _ = self.load(trigger_errors={500: -0.983})
+        self.assertEqual(failed(checks), {"harp_has_no_glitches"})
+        self.assertEqual(check(checks, "harp_has_no_glitches")["rows"], [500])
+        self.assertEqual(vtq.timing_action(checks), "fix glitches")
         fixed = vtq.correct_video_timing(timing)
         self.assertAlmostEqual(
             fixed["harp_time"].iloc[500], 100.0 + 500 * IFI, places=5
@@ -136,30 +148,51 @@ class VideoTimingQCTest(unittest.TestCase):
 
     def test_small_glitch(self):
         """A +3 ms blip is also a glitch."""
-        _, qc, _ = self.load(trigger_errors={800: 0.003})
-        self.assertEqual(qc["glitch_rows"], [800])
+        _, checks, _ = self.load(trigger_errors={800: 0.003})
+        self.assertEqual(check(checks, "harp_has_no_glitches")["rows"], [800])
 
     def test_consecutive_bad_rows_refused(self):
         """Two bad rows in a row are not a glitch and are not corrected."""
-        timing, qc, _ = self.load(trigger_errors={500: -0.983, 501: -0.983})
-        self.assertEqual(qc["qc_class"], "harp_irregular")
-        self.assertEqual(qc["glitch_rows"], [])
-        with self.assertRaises(ValueError):
+        timing, checks, _ = self.load(
+            trigger_errors={500: -0.983, 501: -0.983}
+        )
+        self.assertNotIn("harp_has_no_glitches", failed(checks))
+        self.assertEqual(
+            vtq.timing_action(checks), "refuse: harp_evenly_spaced"
+        )
+        with self.assertRaisesRegex(ValueError, "harp_evenly_spaced"):
+            vtq.correct_video_timing(timing)
+
+    def test_harp_clock_step_refused(self):
+        """Harp shifting back ~2.2 ms and staying there is refused."""
+        timing, _, _ = self.load()
+        timing.loc[1500:, "harp_time_raw"] -= 0.0022
+        checks = vtq.check_video_timing(timing)
+        self.assertEqual(check(checks, "harp_evenly_spaced")["rows"], [1500])
+        self.assertEqual(
+            vtq.timing_action(checks), "refuse: harp_evenly_spaced"
+        )
+        with self.assertRaisesRegex(ValueError, "harp_evenly_spaced"):
             vtq.correct_video_timing(timing)
 
     def test_drops_reindexed_and_tail_estimated(self):
         """Drops of 1, 2, 3, 5 frames: exact rows and tail near truth."""
         dropped = [100, 400, 401, 900, 901, 902] + list(range(1500, 1505))
-        timing, qc, triggers = self.load(dropped=dropped)
-        self.assertEqual(qc["qc_class"], "frame_drops")
-        self.assertEqual(qc["n_frame_gaps"], 4)
-        self.assertEqual(qc["n_frames_dropped"], 11)
-        self.assertEqual(qc["first_gap_row"], 100)
-        # 0.5 flags every drop; the legacy threshold (2) misses the 1-frame
-        # drop, and the 2-frame one sits on its edge.
-        self.assertEqual(qc["n_clock_flags"], 4)
-        legacy = vtq.check_video_timing(timing, threshold=2)
-        self.assertLess(legacy["n_clock_flags"], 4)
+        timing, checks, triggers = self.load(dropped=dropped)
+        self.assertEqual(
+            failed(checks), {"no_frames_lost", "harp_matches_camera"}
+        )
+        lost = check(checks, "no_frames_lost")
+        self.assertEqual(lost["count"], 11)
+        self.assertEqual(lost["rows"], [100, 399, 897, 1494])
+        self.assertEqual(vtq.timing_action(checks), "re-index")
+        # 0.5 frame flags every drop; the legacy tolerance (2) misses the
+        # 1-frame drop, and the 2-frame one sits on its edge.
+        harp = timing["harp_time_raw"].to_numpy()
+        camera = timing["camera_time"].to_numpy()
+        self.assertEqual(check(checks, "harp_matches_camera")["count"], 4)
+        legacy = vtq.check_harp_matches_camera(harp, camera, tolerance=2)
+        self.assertLess(legacy["count"], 4)
 
         fixed = vtq.correct_video_timing(timing)
         k = (timing["frame_number"] - 1000).to_numpy()
@@ -178,8 +211,12 @@ class VideoTimingQCTest(unittest.TestCase):
     def test_many_drops(self):
         """A drop every 8 frames, as in the affected FIP sessions."""
         dropped = np.arange(5, 20000, 8)
-        timing, qc, triggers = self.load(n_exposures=20000, dropped=dropped)
-        self.assertEqual(qc["n_frames_dropped"], len(dropped))
+        timing, checks, triggers = self.load(
+            n_exposures=20000, dropped=dropped
+        )
+        self.assertEqual(
+            check(checks, "no_frames_lost")["count"], len(dropped)
+        )
         fixed = vtq.correct_video_timing(timing)
         k = (timing["frame_number"] - 1000).to_numpy()
         error = fixed["harp_time"].to_numpy() - triggers[k]
@@ -189,12 +226,14 @@ class VideoTimingQCTest(unittest.TestCase):
         """Glitches next to a drop and on a dropped exposure are fixed."""
         # Trigger 405 lands on the row after the 2-frame drop at 400-401;
         # trigger 900's exposure was itself dropped.
-        timing, qc, triggers = self.load(
+        timing, checks, _ = self.load(
             dropped=[400, 401, 900],
             trigger_errors={403: -0.983, 900: -0.983},
         )
-        self.assertEqual(qc["qc_class"], "frame_drops")
-        self.assertEqual(qc["glitch_rows"], [403, 900])
+        self.assertEqual(vtq.timing_action(checks), "re-index")
+        self.assertEqual(
+            check(checks, "harp_has_no_glitches")["rows"], [403, 900]
+        )
         fixed = vtq.correct_video_timing(timing)
         k = (timing["frame_number"] - 1000).to_numpy()
         truth = 100.0 + IFI * k
@@ -203,21 +242,11 @@ class VideoTimingQCTest(unittest.TestCase):
             (fixed["harp_source"] == "glitch_interpolated").sum(), 1
         )
 
-    def test_lost_trigger_fails_post_check(self):
+    def test_lost_trigger_refused(self):
         """A trigger missing from the Harp sequence is refused."""
-        timing, qc, _ = self.load(dropped=[100, 200], lost_trigger=1000)
-        self.assertEqual(qc["qc_class"], "frame_drops")
-        with self.assertRaisesRegex(ValueError, "post-checks"):
-            vtq.correct_video_timing(timing)
-
-    def test_harp_clock_step_refused(self):
-        """Harp shifting back ~2.2 ms and staying there is refused."""
-        timing, _, _ = self.load()
-        timing.loc[1500:, "harp_time_raw"] -= 0.0022
-        qc = vtq.check_video_timing(timing)
-        self.assertEqual(qc["qc_class"], "harp_irregular")
-        self.assertEqual(qc["harp_irregular_rows"], [1500])
-        with self.assertRaisesRegex(ValueError, "evenly spaced"):
+        timing, checks, _ = self.load(dropped=[100, 200], lost_trigger=1000)
+        self.assertEqual(vtq.timing_action(checks), "re-index")
+        with self.assertRaisesRegex(ValueError, "harp_matches_camera"):
             vtq.correct_video_timing(timing)
 
     def corrupt_metadata(self, timing, start=1000, stop=1400, offset=1048):
@@ -227,13 +256,14 @@ class VideoTimingQCTest(unittest.TestCase):
         timing.loc[rows, "camera_time"] += offset * IFI
         return timing
 
-    def test_camera_metadata_error_uses_harp(self):
-        """Corrupted frame numbers with no frames lost: Harp as written."""
+    def test_corrupted_metadata_uses_harp(self):
+        """Corrupted frame numbers, no frames lost: Harp as written."""
         timing, _, _ = self.load(trigger_errors={2000: -0.983})
         timing = self.corrupt_metadata(timing)
-        qc = vtq.check_video_timing(timing)
-        self.assertEqual(qc["qc_class"], "camera_metadata_error")
-        self.assertEqual(qc["n_frames_dropped"], 0)
+        checks = vtq.check_video_timing(timing)
+        self.assertTrue(check(checks, "no_frames_lost")["passed"])
+        self.assertIn("frame_numbers_increase", failed(checks))
+        self.assertEqual(vtq.timing_action(checks), "fix glitches")
         fixed = vtq.correct_video_timing(timing)
         expected = timing["harp_time_raw"].to_numpy().copy()
         expected[2000] = (expected[1999] + expected[2001]) / 2
@@ -243,14 +273,15 @@ class VideoTimingQCTest(unittest.TestCase):
             {"original": 2999, "glitch_interpolated": 1},
         )
 
-    def test_frame_order_error_with_drops_refused(self):
+    def test_corrupted_metadata_with_drops_refused(self):
         """Corrupted frame numbers plus real drops cannot be re-indexed."""
         timing, _, _ = self.load(dropped=[2500])
         timing = self.corrupt_metadata(timing)
+        checks = vtq.check_video_timing(timing)
         self.assertEqual(
-            vtq.check_video_timing(timing)["qc_class"], "frame_order_error"
+            vtq.timing_action(checks), "refuse: frame_numbers_increase"
         )
-        with self.assertRaisesRegex(ValueError, "cannot be located"):
+        with self.assertRaisesRegex(ValueError, "frame_numbers_increase"):
             vtq.correct_video_timing(timing)
 
     def test_more_rows_than_exposures_refused(self):
@@ -260,17 +291,21 @@ class VideoTimingQCTest(unittest.TestCase):
         lines.insert(50, lines[49])
         path.write_text("\n".join(lines) + "\n")
         timing = vtq.load_video_timing(path)
+        checks = vtq.check_video_timing(timing)
+        self.assertEqual(check(checks, "no_frames_lost")["count"], -1)
         self.assertEqual(
-            vtq.check_video_timing(timing)["qc_class"], "frame_order_error"
+            vtq.timing_action(checks), "refuse: frame_numbers_increase"
         )
-        with self.assertRaisesRegex(ValueError, "more frames than exposures"):
+        with self.assertRaises(ValueError):
             vtq.correct_video_timing(timing)
 
-    def test_transcode_mismatch(self):
-        """Video frame count different from CSV rows."""
-        timing, _, _ = self.load()
-        qc = vtq.check_video_timing(timing, video_frame_count=2994)
-        self.assertEqual(qc["qc_class"], "transcode_mismatch")
+    def test_video_frame_count(self):
+        """Skipped without a count; fails when the count differs."""
+        timing, checks, _ = self.load()
+        self.assertIsNone(check(checks, "video_frame_count")["passed"])
+        checks = vtq.check_video_timing(timing, video_frame_count=2994)
+        self.assertEqual(failed(checks), {"video_frame_count"})
+        self.assertEqual(check(checks, "video_frame_count")["count"], -6)
 
     def test_unknown_header(self):
         """A header that is not the known one raises."""
@@ -310,11 +345,15 @@ class VideoTimingQCTest(unittest.TestCase):
         """Both layouts are found in a behavior-videos folder."""
         simulate(self.tmp, name="bottom_camera")
         simulate(self.tmp, layout="new", name="SideCameraRight", dropped=[9])
-        table = vtq.check_session(self.tmp)
+        table = vtq.check_session(self.tmp).set_index("camera")
         self.assertEqual(
-            table.set_index("camera")["qc_class"].to_dict(),
-            {"bottom_camera": "ok", "SideCameraRight": "frame_drops"},
+            table["action"].to_dict(),
+            {
+                "bottom_camera": "use harp as written",
+                "SideCameraRight": "re-index",
+            },
         )
+        self.assertEqual(table.loc["SideCameraRight", "frames_lost"], 1)
 
 
 class CorrectFrameTimesTest(unittest.TestCase):

@@ -1,6 +1,6 @@
 # Plan: `video_timing_qc` — QC and correction of behavior-video timestamps
 
-> Status: revision 3 (2026-09-29). Phases 1 and 2 implemented on branch `plan/video-timing-qc`;
+> Status: revision 4 (2026-09-29; checks redesigned as one-question functions). Phases 1 and 2 implemented on branch `plan/video-timing-qc`;
 > Phase 3 in progress (first pipeline comparison done; the no-frames-lost rule was added after
 > it). Written so a new contributor or agent can pick it up without the
 > conversation that produced it; the evidence behind each decision is in "Background" and
@@ -164,7 +164,7 @@ smooth); only the board's timestamps moved. Hypothesis (unconfirmed): the board 
 and is pulled back into sync. Not seen in the 97 FIP sessions (Sep 2025+), where a 1 ms step would
 have been flagged. Whether the lickometers and sound card (separate Harp devices) step with it is
 unknown. The old QC interpolated the one backward row (+1.0–1.3 ms) and kept the rest. **Decision:
-refuse** (`harp_irregular`). The behavior clock itself is off, and a value between the two
+refuse** (`harp_evenly_spaced` fails). The behavior clock itself is off, and a value between the two
 clocks would be neither; the pipeline also cannot take backward time as written (`kinematics_filter`
 asserts its time base, `merge_asof` needs sorted keys).
 
@@ -176,7 +176,7 @@ Harp stays evenly spaced, and exposures (first/last frame number) = rows = trigg
 (consecutive-frame difference 0.1–2.3 grey levels, same as elsewhere; a real 2 s jump is ~9), and
 rows sharing a frame number show different images, so no frames were replayed: only the metadata
 is wrong. The Harp column is right as written; the old QC left it unchanged. **Decision: correct**
-(`camera_metadata_error`, Harp as written).
+(`frame_numbers_increase` and `camera_time_increases` fail, `no_frames_lost` passes: Harp as written).
 
 This led to the no-frames-lost rule in "Correction" below: frame numbers are only needed to locate
 lost frames, so when none were lost they are not used.
@@ -229,121 +229,76 @@ trusted one**.
 
 ## Design
 
-Kept deliberately flat: one module of plain functions; results are dicts and DataFrames, errors
-are `ValueError`. No classes or report objects.
-
-### Functions (`video_timing_qc.py`)
+One module of plain functions, in the style of contraqctor's `CameraTestSuite`: each check asks
+one question and returns `passed`, `count`, `message` and the offending `rows`. Errors are
+`ValueError`. numpy/pandas only (contraqctor itself is not a dependency).
 
 ```python
 from aind_dynamic_foraging_behavior_video_analysis import video_timing_qc as vtq
 
-timing = vtq.load_video_timing(csv_path)              # harp_time_raw, frame_number, camera_time (s)
-qc = vtq.check_video_timing(timing, threshold=0.5, video_frame_count=None)   # dict
-fixed = vtq.correct_video_timing(timing)              # + harp_time, harp_source; raises if untrusted
+timing = vtq.load_video_timing(csv_path)      # harp_time_raw, frame_number, camera_time (s)
+checks = vtq.check_video_timing(timing)       # one row per check
+vtq.timing_action(checks)                     # what the correction will do
+fixed = vtq.correct_video_timing(timing)      # + harp_time, harp_source; raises if refused
 fixed = vtq.correct_video_timing(timing, trigger_times=vtq.read_harp_trigger_log(log_path))
-table = vtq.check_session(behavior_videos_path)       # DataFrame, one row per camera
+vtq.check_session(behavior_videos_path)       # one row per camera: action, failed checks, ...
+
+times, source = vtq.correct_frame_times(frame_number, camera_time, trigger_times)  # arrays only
 ```
 
-The correction itself is hardware-agnostic:
+### Checks
 
-```python
-times, source = vtq.correct_frame_times(frame_number, camera_time, trigger_times)
-```
-
-It takes plain arrays and knows nothing about CSV layouts or Harp. `correct_video_timing` is a thin
-wrapper that passes the CSV's Harp column (or the trigger log, after checking it matches the CSV)
-as `trigger_times` and adds the result as columns. Helpers, also public:
-`frame_interval(times)`, `find_glitch_rows(trigger_times, ifi, threshold)`,
-`find_irregular_steps(trigger_times, ifi, threshold)`,
-`post_check_failures(times, camera_time, ifi, threshold)`.
-
-- `load_video_timing` reads either layout through `video_alignment.read_video_csv`, takes the
-  first three columns by position, checks a header (if any) is `ReferenceTime,
-  CameraFrameNumber, CameraFrameTime`, and converts camera time from ns to s (confirmed ns for
-  both layouts: median step 1.9995 ms). Raises on an empty file, unknown header, or NaNs.
-- `check_session` finds `*.csv` and `*/metadata.csv`; a CSV that fails to load gets class
-  `unreadable` and the error text.
-
-### Detection (`check_video_timing`)
-
-- **IFI**: from the Harp column (`frame_interval`: mean of the steps within 25% of the median;
-  Harp steps alternate by one 32 µs tick). Harp is evenly spaced with or without drops, and does
-  not depend on the camera metadata, which can be corrupted. Never hard-coded.
-- **Frames lost**: `n_frames_dropped` = exposures (last − first frame number + 1) − rows.
-- **Harp irregular rows**: after fixing glitches, Harp steps off from IFI by more than
-  `threshold × IFI` (e.g. clock steps, runs of bad rows).
-- **Frame continuity**: gaps where the frame step > 1 (frames dropped = exposures − rows);
-  order errors where it is ≤ 0.
-- **Backward steps** in Harp and camera time.
-- **Clock flags**: `|ΔHarp − ΔCamera| > threshold × IFI`, default 0.5 (2 reproduces the legacy
-  flags). Flags not explained by a gap or a glitch are `unexplained_rows`.
-- **Harp glitch rows**, from the Harp column alone: row *r* with
-  `|harp[r] − (harp[r−1] + harp[r+1]) / 2| > 0.5 × IFI` and
-  `|harp[r+1] − harp[r−1] − 2 × IFI| ≤ 0.5 × IFI`. Adjacent detections are discarded (a run of bad
-  rows is not a glitch). Frame numbers are deliberately not part of the rule: under
-  arrival-order pairing the Harp column is the trigger sequence, evenly spaced whether or not
-  frames were dropped, so this also finds glitches in drop sessions (a rule requiring frame steps
-  of 1 missed 1 of 4 in `behavior_816214_2025-12-02_08-28-39`).
-- **Clock slip**: `((cam[-1] − cam[0]) − (harp[-1] − harp[0])) / IFI` frames. Normal drift in `ok`
-  sessions is about −40…0 frames over ~90 min.
-- **Transcode mismatch**: only if the caller passes `video_frame_count`.
-
-`qc_class`, first match wins:
-
-| Class | Condition | `correct_video_timing` |
+| Check | Question | Fails on |
 |---|---|---|
-| `transcode_mismatch` | video frame count given and ≠ rows | (not checked there) |
-| `frame_order_error` | more rows than exposures; or frames lost and frame numbers / camera time not increasing | raises |
-| `frame_drops` | frames lost | re-indexes |
-| `harp_irregular` | no frames lost; Harp not evenly spaced after the glitch fix | raises |
-| `camera_metadata_error` | no frames lost; Harp even; frame numbers or camera time inconsistent | Harp as written |
-| `harp_glitch` | no frames lost; isolated glitches only | glitches fixed |
-| `ok` | none of the above | Harp as written |
+| `no_frames_lost` | Do the frame numbers span exactly as many exposures as rows? | drops (`count` = frames lost; `rows` = where frame numbers skip) |
+| `frame_numbers_increase` | Does every frame number step forward? | corrupted camera metadata |
+| `camera_time_increases` | Does every camera time step forward? | corrupted camera metadata |
+| `harp_has_no_glitches` | Is every Harp value in line with its neighbours? | isolated Harp glitches |
+| `harp_evenly_spaced` | After fixing glitches, is every Harp step one frame interval? | Harp clock steps, runs of bad rows |
+| `harp_matches_camera` | After fixing glitches, does each Harp step match the camera step? | drops, corrupted metadata, clock steps |
+| `video_frame_count` | Does the video have one frame per row? (skipped without a count) | transcode problems |
 
-A camera can carry both drops and glitches; it is classed `frame_drops` and both are corrected.
+Tolerance: half a frame interval (`STEP_TOLERANCE`). Frame interval: `frame_interval`, the mean of
+the Harp steps within 25% of the median (Harp steps alternate by one 32 µs tick). Glitch rule
+(`find_glitch_rows`): a value off from its neighbours' midpoint while the neighbours are two frames
+apart; runs of bad values are not glitches. It uses the Harp column alone, so it works in drop
+sessions too (a rule requiring frame steps of 1 missed 1 of 4 glitches in `816214_2025-12-02`).
+`harp_matches_camera` with tolerance 2 reproduces the old QC's flags.
 
-### Correction (`correct_frame_times`)
+### Correction
 
-Each column is used only for what it can answer. The Harp column (arrival-order pairing) says
-*when* the *n*-th trigger happened, but cannot show drops. Frame number and camera time come from
-the camera's metadata and fail together; they say *which exposure* a row is, which only matters if
-frames were lost. Camera time is independent of Harp, so it checks Harp in the drop case.
+Each column answers only what it can. The Harp column (arrival-order pairing) says *when* the
+*n*-th trigger happened but cannot show drops. Frame number and camera time come from the camera's
+metadata and fail together; they say *which exposure* a row is, which only matters if frames were
+lost. Camera time is independent of Harp, so it checks Harp in the drop case.
 
-With `lost` = exposures (first/last frame number) − rows:
+`correct_frame_times`, and `timing_action`, which predicts it from the check table:
 
-- `lost < 0`: refuse.
-- `lost == 0`: row *n* was exposed by trigger *n*. Time = trigger sequence (glitches fixed); frame
-  numbers and camera time are not used. It must be evenly spaced (`find_irregular_steps`), else
-  refuse. Covers `ok`, `harp_glitch`, `camera_metadata_error`; refuses `harp_irregular`.
-- `lost > 0`: frame numbers and camera time must strictly increase, else refuse. Then steps 1–4.
+1. Fix isolated Harp glitches (`fix_glitches`).
+2. `no_frames_lost` passes: row *n* was exposed by trigger *n*, so use Harp as written. Require
+   `harp_evenly_spaced`. Action: `use harp as written`, `fix glitches`, or
+   `refuse: harp_evenly_spaced`.
+3. Otherwise require `frame_numbers_increase` and `camera_time_increases`; move each Harp value to
+   its exposure's row (`reindex_to_exposures`); estimate rows past the last recorded trigger from a
+   linear fit on camera time over the last 600 s (`estimate_missing_from_camera`), or read them
+   from the trigger log; require `harp_matches_camera` on the result. Action: `re-index`, or
+   `refuse: <check>`.
 
-Where it can be fooled: `lost` depends on the first and last frame numbers (if corrupted, `lost`
-is almost certainly non-zero with frame numbers going backward, so refused); a lost frame and a
-duplicated frame could cancel (not seen; the report flags frame-number anomalies); clock steps
-inside a drop session are refused.
+`harp_source` per row: `original`, `glitch_interpolated`, `reindexed`, `estimated_camera_fit`, or
+`trigger_log` (log mode; `correct_video_timing` first checks the log covers every exposure and
+matches the CSV's Harp column to one 32 µs tick).
 
-1. **Glitch fix** on the trigger sequence (the CSV Harp column, or the trigger log if given):
-   `t[r] = (t[r−1] + t[r+1]) / 2`. Done first: re-indexing moves values to other rows, so an
-   unfixed glitch would land on the wrong row and fail the post-checks.
-2. **Re-index**: `k = frame_number − frame_number[0]` is each row's trigger index;
-   `harp_time[row] = t[k]` for every `k` the sequence covers.
-3. **Tail**: rows with `k ≥ rows` have no trigger in the CSV. Without a log, fit
-   `harp = a + b × camera_time` on the exact rows in the last `tail_fit_window_s` (600 s) and
-   predict. With a log, every row is read from it (`correct_video_timing` first checks that the
-   log covers every exposure and matches the CSV's Harp column to one 32 µs tick, else
-   `ValueError`).
-4. **Post-checks** (`post_check_failures`): corrected time strictly increasing; no step
-   disagreeing with camera time by more than `threshold × IFI`; residual from a linear fit on
-   camera time ≤ 1 ms. Any failure raises `ValueError`; a partially corrected result is never
-   returned.
+Where it can be fooled: `no_frames_lost` uses the first and last frame numbers (if those were
+corrupted, frame numbers would step back, so refused); a lost frame and a duplicated frame could
+cancel (not seen; `frame_numbers_increase` fails, so it is visible); clock steps inside a drop
+session are refused. Assumes one trigger per exposure and that the first saved row is the first
+exposure (trigger-log counts matched exposures on every session checked).
 
-`source` per row: `original`, `reindexed`, `glitch_interpolated` or `estimated_camera_fit`;
-`correct_video_timing` stores it as `harp_source` and relabels rows read from a trigger log as
-`trigger_log`. Only Harp time is changed; camera time is never modified.
-
-Assumptions: one Harp trigger per exposure, no triggers lost (a lost trigger fails the
-post-checks), and the first saved row is the first exposure. The last one cannot be checked from
-the CSV; the trigger log's event count equalled the exposure count on all 6 sessions checked.
+Changes from revision 3: the check table and `timing_action` replace `qc_class` (`ok`,
+`harp_glitch`, `harp_irregular`, `camera_metadata_error`, `frame_order_error`, `frame_drops`,
+`transcode_mismatch`) and its ~20 summary fields; the drop-path "residual from a camera-time fit
+≤ 1 ms" check was dropped (step-by-step agreement already catches a lost trigger, and it never
+fired on real data).
 
 ### Integration (Phase 2)
 

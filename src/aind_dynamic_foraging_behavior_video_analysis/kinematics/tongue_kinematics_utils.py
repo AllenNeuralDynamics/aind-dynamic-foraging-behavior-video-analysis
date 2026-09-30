@@ -1179,12 +1179,11 @@ def integrate_keypoints_with_video_time(video_csv_path, keypoint_dfs,
     """
     # Step 1: Load, check, and correct the video timing
     timing = video_timing_qc.load_video_timing(video_csv_path)
-    qc = video_timing_qc.check_video_timing(timing)
-    print(
-        f"Video QC: {qc['qc_class']} ({qc['n_rows']} rows, "
-        f"{qc['n_frames_dropped']} frames dropped, "
-        f"glitch rows {qc['glitch_rows']})"
-    )
+    checks = video_timing_qc.check_video_timing(timing)
+    failed = checks[checks["passed"].eq(False)]
+    print(f"Video QC: {video_timing_qc.timing_action(checks)} ({len(timing)} rows)")
+    for _, check in failed.iterrows():
+        print(f"  failed {check['check']}: {check['message']}")
     trigger_times = None
     if trigger_log_path is not None:
         trigger_times = video_timing_qc.read_harp_trigger_log(trigger_log_path)
