@@ -116,7 +116,8 @@ def run_batch_analysis(
     percentiles=None, 
     extract_clips=True,
     force_rerun=False,
-    use_trigger_log=None
+    use_trigger_log=None,
+    camera_name="BottomCamera"
 ):
     """
     Run analysis for multiple sessions in batch.
@@ -138,6 +139,9 @@ def run_batch_analysis(
     use_trigger_log : bool or None, optional
         Take video Harp times from the camera trigger log; see
         ``generate_tongue_dfs`` (default: None, use it when present).
+    camera_name : str, optional
+        Camera whose video CSV the keypoints come from; see
+        ``generate_tongue_dfs`` (default: "BottomCamera").
     """
     percentiles = percentiles or [0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0]
     save_root = Path(save_root)
@@ -161,7 +165,8 @@ def run_batch_analysis(
         try:
             # ---- 1) Generate DFs ----
             nwb, tongue_kins, tongue_movs, kps_raw, tongue_trials = generate_tongue_dfs(
-                pred_csv, data_root, use_trigger_log=use_trigger_log
+                pred_csv, data_root, use_trigger_log=use_trigger_log,
+                camera_name=camera_name
             )
 
             # ---- 1a) Save intermediate data ----
@@ -384,7 +389,7 @@ def analyze_tongue_movement_quality(
 
 
 def generate_tongue_dfs(predictions_csv_path: Path, data_root: Path, tolerance=0.01,
-                        use_trigger_log=None):
+                        use_trigger_log=None, camera_name="BottomCamera"):
     """
     Run the end-to-end pipeline for a single session and return:
       - the NWB object (with licks/trials annotated),
@@ -408,6 +413,11 @@ def generate_tongue_dfs(predictions_csv_path: Path, data_root: Path, tolerance=0
         catches corrupted frame numbers the CSV alone cannot. None (default):
         use it if the file exists; True: require it; False: CSV only. See
         ``video_timing_qc.correct_video_timing``.
+    camera_name : str, optional
+        Camera the predictions were made from, in New/AIND naming (e.g.
+        "BottomCamera", "SideCameraLeft"); its video CSV gives the frame
+        times. Old/flat files are found by the snake_case name (default
+        "BottomCamera").
 
     Returns
     -------
@@ -438,7 +448,7 @@ def generate_tongue_dfs(predictions_csv_path: Path, data_root: Path, tolerance=0
     videos_folder = find_behavior_videos_folder(str(data_root / session_id))
     if videos_folder is None:
         raise FileNotFoundError(f"Videos folder not found for session {session_id}")
-    video_csv = find_video_csv_path(videos_folder)
+    video_csv = find_video_csv_path(videos_folder, camera_name)
     if video_csv is None:
         raise FileNotFoundError(f"No video CSV found in {videos_folder}")
     print(f"Found video CSV: {video_csv}")

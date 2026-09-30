@@ -1,8 +1,7 @@
 # Plan: `video_timing_qc` — QC and correction of behavior-video timestamps
 
-> Status: revision 5 (2026-09-30; decision reordered, checks added after a top-down review). Phases 1 and 2 implemented on branch `plan/video-timing-qc`;
-> Phase 3 in progress (first pipeline comparison done; the no-frames-lost rule was added after
-> it). Written so a new contributor or agent can pick it up without the
+> Status: revision 5 (2026-09-30). Phases 1–3 done; released as 0.1.0; Phase 4 not started.
+> Written so a new contributor or agent can pick it up without the
 > conversation that produced it; the evidence behind each decision is in "Background" and
 > "Findings".
 
@@ -384,18 +383,34 @@ So:
    | `behavior_816212_2025-12-05_13-47-41` | frame_drops | 2,746,049 rows differ, up to 374 s |
    | `behavior_818586_2026-01-21_09-43-54` | harp_glitch, new layout | old function crashes (`TypeError` on the header row); new works |
 
-3. **Phase 3: re-run the LP batch** on a set covering ok, glitch, drop and new-layout sessions,
-   once with `main` and once with this branch (`extract_clips=False`), and diff the outputs with
-   `python scripts/compare_batch_outputs.py out_old out_new`. It reports, per session and
-   intermediate parquet, `identical` or which columns changed and by how much. Expect ok sessions
-   identical, glitch sessions to differ only slightly in time columns, drop sessions to differ in
-   time and in everything matched by time (trials, licks), and new-layout sessions to appear
-   only in the new run. Then release (minor version, changelog note: `time_raw` changes for drop
-   and glitch sessions; the returned video frame has new column names).
+3. **Phase 3 (done): LP batch comparison, release 0.1.0.**
+   `kinematics_analysis/code/verify_video_timing_qc.ipynb` ran `run_batch_analysis` on attached
+   sessions with library `main` and with this branch (`extract_clips=False`) and diffed every
+   intermediate parquet (`scripts/compare_batch_outputs.py`). None of the 57 attached LP sessions
+   has dropped frames, so drops are covered by `examples/video_timing_qc_validation.ipynb`.
+
+   Run 1 (`985a65f`) found the Harp clock step and corrupted-metadata cases (see "Findings:
+   attached LP sessions") and led to revisions 3–5. Run 2 (`1f84b3e`, 2026-09-30):
+
+   | Session | Action | Diff vs `main` |
+   |---|---|---|
+   | `716325_2024-05-31`, `717259_2024-06-28` | use harp as written | all 17 files identical |
+   | `751766_2025-02-11`, `751769_2025-01-16` | fix glitches | `time`/`time_raw`/`time_in_session` differ on 1 row by 8 µs; movements, trials, licks identical |
+   | `784803_2025-07-02` (corrupted metadata) | use harp as written | all identical |
+   | `763590_2025-05-02` (corrupted metadata) | use harp as written | both versions fail later on an NWB assertion (`Reward before choice time`), unrelated; timing passed |
+   | `751181_2025-02-26`, `754897_2025-03-14` (clock step) | refuse: harp_evenly_spaced | missing in new, by decision |
+   | `781166_2025-05-15` (header-row CSV) | use harp as written | `main` crashes (`TypeError`); branch runs |
+
+   Not exercised in the batch: revision 5's changes (duplicate-frame and clock-rate checks,
+   trigger log by default with count equality). They were checked on the 17 downloaded cameras
+   (same actions; all 7 logs have one event per exposure) and in the synthetic tests.
+
+   Released as 0.1.0 (README "Changes"). Before the merge, `kinematics_analysis` (`wild`) pinned
+   the library to `5738b32`, the prior `main`; the motion-energy and BEAST capsules already pin
+   older commits.
 4. **Phase 4: migrate other consumers** (ME table, clips, BEAST) to the corrected time.
 
-Consumers pin this library by SHA or tag (see `PYTHON_311_UPGRADE_PLAN.md`), so none of them
-changes until it moves its pin.
+Consumers pin this library by commit, so none of them changes until it moves its pin.
 
 ### Glitch plus drops: verified
 
@@ -458,7 +473,7 @@ colleague's numbers.
 |---|---|---|
 | 1 | `video_timing_qc` + synthetic tests + real-data validation | done |
 | 2 | Replace QC in `integrate_keypoints_with_video_time`, trigger-log option in `tongue_analysis` | done |
-| 3 | LP batch re-run on affected sessions, release | |
+| 3 | LP batch comparison, release 0.1.0 | done |
 | 4 | ME table, clips, BEAST migrated | |
 
 ## Open questions
