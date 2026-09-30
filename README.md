@@ -18,7 +18,8 @@ One test: **would another AIND project doing tongue kinematics want this, unchan
   `tongue_quality_stats.json`), runs in the batch pipeline, or is generic to
   tongue-kinematics sessions — keypoint I/O and filtering, segmentation,
   aggregation, trial/lick annotation, QC stats, lick detection, video/NWB
-  lookup, video timing QC, clip extraction, raster/PSTH primitives. It must
+  lookup, video timing and quality QC, clip extraction, raster/PSTH
+  primitives. It must
   stay stable: consuming capsules pin a commit and move the pin deliberately.
 - **Not here:** analysis built *on top of* the intermediates for one
   scientific question — encoding models, per-unit result registries, spatial
@@ -64,7 +65,45 @@ in `VIDEO_TIMING_QC_PLAN.md`; `examples/video_timing_qc_validation.ipynb`
 shows it on real sessions against the trigger log.
 
 
+## Video quality QC
+
+`video_quality_qc` measures image quality on about 100 keyframes spread
+across a behavior-video MP4 and says whether to use the video. Only the
+sampled keyframes are decoded (a few seconds locally, about 30 s per camera
+over HTTPS). Metrics per keyframe: sharpness (Laplacian variance, 2×
+downsampled), noise, brightness and exposure statistics (from
+`aind-video-utils`), contrast, clipping at the tagged range, similarity to a
+reference frame, and shift from it (reported only). Needs the `video-qc`
+extra and `ffprobe` on `PATH`.
+
+```python
+from aind_dynamic_foraging_behavior_video_analysis import video_quality_qc as vqq
+from aind_dynamic_foraging_behavior_video_analysis import video_quality_report as vqr
+
+qc = vqq.measure_video_quality("behavior-videos/BottomCamera/video.mp4",
+                               time_window=(0, 4950))  # video seconds; optional
+checks = vqq.check_video_quality(qc, camera="BottomCamera")
+vqq.quality_action(checks)        # "use" or "exclude: <check>"
+vqq.write_video_quality(qc, checks, "results/", camera="BottomCamera")
+vqr.session_card(qc, checks)      # one-page figure; vqr.batch_pdf for many
+```
+
+Stability checks (sharpness, brightness, scene) compare each sample with
+the session's own median and need no calibration. Level checks (sharp
+enough, exposure, contrast) are skipped until thresholds are calibrated
+per camera. The recording often runs past the session, which fails the
+stability checks, so pass the task as `time_window`. Design, evidence and
+limits: `VIDEO_QUALITY_QC_PLAN.md`; `examples/video_quality_qc_validation.ipynb`
+runs it on a public session.
+
+
 ## Changes
+
+### Unreleased
+
+- **New:** `video_quality_qc` and `video_quality_report` (see above), in a
+  new `video-qc` extra (`aind-video-utils==0.7.0`, `av`, `matplotlib`,
+  `pyarrow`). Nothing existing changes.
 
 ### 0.1.0 (2026-09-30)
 
@@ -113,9 +152,15 @@ video-clip modules, install the `kinematics` extra:
 pip install -e ".[kinematics]"
 ```
 
+For video quality QC, install the `video-qc` extra (it also needs
+`ffmpeg`/`ffprobe` on `PATH`):
+```bash
+pip install -e ".[video-qc]"
+```
+
 To develop the code, run
 ```bash
-pip install -e ".[kinematics,dev]"
+pip install -e ".[kinematics,video-qc,dev]"
 ```
 
 ## Contributing
