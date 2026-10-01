@@ -1,4 +1,5 @@
-"""Tests for video_quality_qc and video_quality_report.
+"""Tests for video_quality_qc, video_quality_report and
+video_alignment.task_frame_window.
 
 Videos are synthetic MP4s encoded here with PyAV (h264 with B-frames, a
 fixed GOP, luma written directly so values are not range-converted): a
@@ -6,8 +7,8 @@ smooth random texture with a moving blob, plus the fault under test on
 chosen frames.
 """
 
+import dataclasses
 import json
-import re
 import shutil
 import tempfile
 import unittest
@@ -21,7 +22,7 @@ import pandas as pd
 
 matplotlib.use("Agg")
 
-from aind_video_utils import read_mp4_frame_index  # noqa: E402
+from aind_video_utils import probe, read_mp4_frame_index  # noqa: E402
 
 from aind_dynamic_foraging_behavior_video_analysis import (  # noqa: E402
     video_quality_qc as vqq,
@@ -32,6 +33,7 @@ from aind_dynamic_foraging_behavior_video_analysis import (  # noqa: E402
 from aind_dynamic_foraging_behavior_video_analysis.video_alignment import (  # noqa: E402,E501
     behavior_time_to_frame_index,
     read_trial_times,
+    task_frame_window,
 )
 from tests.test_video_timing_qc import write_trigger_log  # noqa: E402
 
@@ -68,8 +70,9 @@ def _texture(seed=0):
 def _frame(i, texture, fault=None):
     """Luma for frame ``i``: texture, a small moving blob, then ``fault``."""
     y = texture.copy()
-    cx = 30 + (i * 2) % 100
-    y[55:65, cx : cx + 10] += 40
+    left = 30 + (i * 2) % 100
+    blob = slice(left, left + 10)
+    y[55:65, blob] += 40
     if fault is not None:
         y = fault(i, y)
     return np.clip(np.round(y), 0, 255).astype(np.uint8)
@@ -165,6 +168,17 @@ class TempDirTest(unittest.TestCase):
         shutil.rmtree(cls.tmp)
 
 
+def measure_mp4(path, window=(0, 300)):
+    """Sample and measure a video (every keyframe of a 300-frame file)."""
+    frames, samples, color_range = vqq.sample_keyframes(path, window)
+    return frames, vqq.measure(frames, samples, color_range)
+
+
+def check_names(checks, passed):
+    """Names of the checks that passed (or failed)."""
+    return checks.loc[checks["passed"] == passed, "check"].tolist()
+
+
 # --- Per-frame metrics ---------------------------------------------------
 
 
@@ -192,32 +206,8 @@ class FrameMetricTest(unittest.TestCase):
         y = 100 + rng.normal(0, 5, (200, 200))
         self.assertAlmostEqual(vqq.noise_sigma(y), 5, delta=0.3)
 
-    def test_luma_histogram_counts_every_pixel(self):
-        """One bin per value, summing to the pixel count."""
-        y = np.array([[0, 255], [255, 7]], dtype=np.uint8)
-        h = vqq.luma_histogram(y, 8)
-        self.assertEqual(len(h), 256)
-        self.assertEqual(h[255], 2)
-        self.assertEqual(h.sum(), 4)
-
-    def test_frame_quality_stats_black_frame(self):
-        """A black frame has zero contrast rather than dividing by zero."""
-        stats = vqq.frame_quality_stats(
-            np.zeros((8, 8), dtype=np.uint8), "tv", 8
-        )
-        self.assertEqual(stats.contrast_rms, 0.0)
-        self.assertEqual(stats.pct_clipped_low, 100.0)
-
-    def test_clipping_counts_the_tagged_range(self):
-        """TV range clips at 16 / 235; full range at 0 / 255."""
-        y = np.array([[16, 17, 235, 234]], dtype=np.uint8)
-        tv = vqq.frame_quality_stats(y, "tv", 8)
-        pc = vqq.frame_quality_stats(y, "pc", 8)
-        self.assertEqual((tv.pct_clipped_low, tv.pct_clipped_high), (25, 25))
-        self.assertEqual((pc.pct_clipped_low, pc.pct_clipped_high), (0, 0))
-
     def test_phase_shift_positive_and_negative(self):
-        """Recovers whole and fractional shifts in both directions."""
+        """Recovers whole shifts in both directions."""
         t = _texture()
         for dy, dx in [(3, 5), (-4, -2), (0, 0)]:
             moved = np.roll(t, (dy, dx), axis=(0, 1))
@@ -235,167 +225,241 @@ class FrameMetricTest(unittest.TestCase):
         self.assertAlmostEqual(vqq.similarity(t, t), 1.0)
         self.assertEqual(vqq.similarity(t, np.ones_like(t)), 0.0)
 
+    def test_measure_on_arrays(self):
+        """Intensity statistics, the histogram and the deviations."""
+        frames = np.stack(
+            [np.full((4, 4), v, dtype=np.uint8) for v in (0, 100)]
+        )
+        frames[1, 0, :2] = (17, 235)
+        samples = pd.DataFrame({"frame_index": [1, 2], "video_time": [0, 1]})
+        out = vqq.measure(frames, samples, "tv")
+        black, grey = out.iloc[0], out.iloc[1]
+        self.assertEqual(black["contrast_rms"], 0.0)  # not 0 / 0
+        self.assertEqual(black["pct_clipped_low"], 100)
+        self.assertEqual(black["entropy_bits"], 0)
+        self.assertEqual(grey["pct_clipped_high"], 100 / 16)
+        self.assertEqual(grey["pct_clipped_low"], 0)  # 17 is above 16
+        self.assertEqual(grey["histogram"][100], 14)
+        self.assertEqual(out["histogram"].map(sum).tolist(), [16, 16])
+        self.assertAlmostEqual(grey["mean"], (14 * 100 + 17 + 235) / 16)
+        self.assertEqual(grey["dynamic_range"], grey["p99"] - grey["p1"])
+        self.assertEqual(out["color_range"].tolist(), ["tv", "tv"])
+        self.assertTrue((out["mean_dev"] > 0).all())
+
+    def test_clipping_counts_the_tagged_range(self):
+        """TV range clips at 16 / 235 inclusive; full range at 0 / 255."""
+        frames = np.array([[[16, 17, 235, 234]]], dtype=np.uint8)
+        samples = pd.DataFrame({"frame_index": [1], "video_time": [0.0]})
+        tv = vqq.measure(frames, samples, "tv").iloc[0]
+        pc = vqq.measure(frames, samples, "pc").iloc[0]
+        self.assertEqual((tv.pct_clipped_low, tv.pct_clipped_high), (25, 25))
+        self.assertEqual((pc.pct_clipped_low, pc.pct_clipped_high), (0, 0))
+
 
 # --- Sampling ------------------------------------------------------------
 
 
 class SamplingTest(TempDirTest):
-    """Keyframe choice and decoding on a clean synthetic video."""
+    """Keyframe choice and seeks on a clean synthetic video."""
 
     @classmethod
     def setUpClass(cls):
-        """Encode one clean video."""
+        """Encode one clean video (keyframes every 10 frames)."""
         super().setUpClass()
         cls.path = write_mp4(cls.tmp / "clean.mp4")
         cls.index = read_mp4_frame_index(cls.path)
+
+    def keys(self, window):
+        """Frame indices sampled in ``window``."""
+        return vqq.sample_keyframes(self.path, window)[1]["frame_index"]
 
     def test_file_has_b_frames_and_edit_list(self):
         """The case the frame mapping must handle."""
         self.assertTrue(self.index.edits)
         self.assertFalse(np.array_equal(self.index.pts, self.index.dts))
 
-    def test_keyframes_every_gop(self):
-        """Presentation indices of keyframes are multiples of the GOP."""
-        keys = vqq.keyframe_display_indices(self.index)
-        np.testing.assert_array_equal(keys, np.arange(0, 300, GOP))
-
-    def test_choose_skips_frame_zero_and_edges(self):
-        """Never frame 0 nor the edge fraction."""
-        chosen = vqq.choose_keyframes(self.index, 100, edge_fraction=0.1)
-        self.assertGreaterEqual(chosen.min(), 30)
-        self.assertLess(chosen.max(), 270)
-        chosen = vqq.choose_keyframes(self.index, 100, edge_fraction=0)
-        self.assertEqual(chosen.min(), GOP)
-
-    def test_choose_fewer_than_available(self):
-        """Evenly spread, unique, ascending."""
-        chosen = vqq.choose_keyframes(self.index, 5, edge_fraction=0)
-        self.assertEqual(len(chosen), 5)
-        self.assertEqual(chosen[0], GOP)
-        self.assertEqual(chosen[-1], 290)
-        self.assertTrue((np.diff(chosen) > 0).all())
-
-    def test_choose_frame_window(self):
-        """Only keyframes inside ``[start, end)``."""
-        chosen = vqq.choose_keyframes(
-            self.index, 100, edge_fraction=0, frame_window=(50, 101)
-        )
-        np.testing.assert_array_equal(chosen, np.arange(50, 101, GOP))
-
-    def test_choose_nothing_eligible(self):
-        """An empty window raises."""
-        with self.assertRaises(ValueError):
-            vqq.choose_keyframes(self.index, 10, frame_window=(1000, 2000))
-
-    def test_read_keyframes_returns_the_keyframes(self):
-        """Each decoded frame is the keyframe asked for."""
-        texture = _texture()
-        frames = vqq.read_keyframes(self.path, self.index, [10, 150])
-        for (pts, luma), i in zip(frames, [10, 150]):
-            self.assertEqual(luma.shape, (H, W))
-            expected = _frame(i, texture).astype(float)
-            self.assertLess(np.abs(luma - expected).mean(), 1.5)
-
-    def test_luma_plane_is_not_range_converted(self):
-        """Values come back as coded, not stretched to full range (which
-        would move the mean by several units)."""
-        luma = vqq.read_keyframes(self.path, self.index, [10])[0][1]
-        expected = _frame(10, _texture())
-        self.assertAlmostEqual(luma.mean(), expected.mean(), delta=0.5)
-        self.assertAlmostEqual(luma.min(), expected.min(), delta=4)
-
-    def test_open_options(self):
-        """Timeouts for URLs only."""
-        self.assertIn("rw_timeout", vqq._open_options("https://x/v.mp4"))
-        self.assertEqual(vqq._open_options(self.path), {})
-
-    def test_luma_plane_refuses_other_formats(self):
-        """RGB frames have no luma plane."""
-        frame = av.VideoFrame(16, 16, "rgb24")
-        with self.assertRaises(ValueError):
-            vqq.luma_plane(frame)
-
-    def test_read_keyframes_refuses_unsafe_edit_list(self):
-        """An edit list that drops frames cannot be frame-addressed."""
-        unsafe = mock.Mock(is_frame_addressing_safe=lambda: False)
-        with self.assertRaises(ValueError):
-            vqq.read_keyframes(self.path, unsafe, [10])
-
-    def test_read_keyframes_refuses_wrong_landing(self):
-        """A seek that lands elsewhere raises instead of mislabelling."""
-        with self.assertRaisesRegex(ValueError, "returned pts"):
-            vqq.read_keyframes(self.path, self.index, [15])
-
-
-# --- Measuring and checks ------------------------------------------------
-
-
-class MeasureTest(TempDirTest):
-    """measure_video_quality and the checks on synthetic faults."""
-
-    def measure(self, name, fault=None, **kwargs):
-        """Encode and measure one video, sampling every keyframe."""
-        path = write_mp4(self.tmp / f"{name}.mp4", fault=fault)
-        kwargs.setdefault("n_samples", 100)
-        kwargs.setdefault("edge_fraction", 0)
-        return vqq.measure_video_quality(path, **kwargs)
-
-    def action(self, qc, **kwargs):
-        """Checks and action for a measured video."""
-        checks = vqq.check_video_quality(qc, **kwargs)
-        return checks.set_index("check"), vqq.quality_action(checks)
-
-    def test_clean(self):
-        """All stability checks pass; level checks skipped; action use."""
-        qc = self.measure("clean")
-        s = qc.summary
-        self.assertEqual((s.width, s.height, s.codec), (W, H, "h264"))
-        self.assertEqual((s.n_frames, s.n_keyframes, s.gop), (300, 30, 10))
-        self.assertAlmostEqual(s.fps, FPS)
-        self.assertEqual(s.n_samples, 29)
-        self.assertIsNone(s.window_start)
-        samples = qc.samples
+    def test_never_frame_zero_nor_edges(self):
+        """Frame 0 and the 1% edges are never sampled; with a 10% edge
+        nothing below frame 30 or from 270 on."""
         self.assertEqual(
-            samples["frame_index"].tolist(), list(range(10, 300, 10))
+            self.keys((0, 300)).tolist(), list(range(10, 300, 10))
         )
+        with mock.patch.object(vqq, "EDGE_FRACTION", 0.1):
+            self.assertEqual(
+                self.keys((0, 300)).tolist(), list(range(30, 270, 10))
+            )
+
+    def test_window(self):
+        """Only keyframes inside ``[start, end)``."""
+        self.assertEqual(
+            self.keys((50, 101)).tolist(), [50, 60, 70, 80, 90, 100]
+        )
+
+    def test_middle_fraction_by_default(self):
+        """No window: the middle 50% of the file, frames 75 to 224."""
+        self.assertEqual(self.keys(None).tolist(), list(range(80, 225, 10)))
+
+    def test_evenly_spread_when_more_keyframes_than_samples(self):
+        """Fewer samples than keyframes: evenly spread, ends included."""
+        with mock.patch.object(vqq, "N_SAMPLES", 5):
+            self.assertEqual(
+                self.keys((0, 300)).tolist(), [10, 80, 150, 220, 290]
+            )
+
+    def test_empty_window_raises(self):
+        """No keyframe in the window."""
+        with self.assertRaisesRegex(ValueError, "No keyframe"):
+            self.keys((1000, 2000))
+
+    def test_seeks_return_the_keyframes(self):
+        """Each frame is the keyframe asked for, at its video time, with
+        the luma as coded (not stretched to full range, which would move
+        the mean and minimum by several units)."""
+        frames, samples, color_range = vqq.sample_keyframes(
+            self.path, (10, 151)
+        )
+        self.assertEqual(frames.shape, (15, H, W))
+        self.assertEqual(frames.dtype, np.uint8)
+        self.assertEqual(color_range, "unknown")  # the encoder sets no tag
         np.testing.assert_allclose(
             samples["video_time"], samples["frame_index"] / FPS
         )
+        texture = _texture()
+        for luma, i in zip(frames, samples["frame_index"]):
+            expected = _frame(i, texture)
+            self.assertLess(np.abs(luma - expected.astype(float)).mean(), 1.5)
+            self.assertAlmostEqual(luma.mean(), expected.mean(), delta=0.5)
+            self.assertAlmostEqual(luma.min(), expected.min(), delta=4)
+
+    def test_luma_plane_refuses_other_formats(self):
+        """RGB frames have no luma plane."""
+        with self.assertRaisesRegex(ValueError, "pixel format"):
+            vqq.luma_plane(av.VideoFrame(16, 16, "rgb24"))
+
+    def test_unsafe_edit_list_refused(self):
+        """An edit list that drops frames cannot be frame-addressed."""
+        unsafe = mock.Mock(is_frame_addressing_safe=lambda: False)
+        with mock.patch.object(
+            vqq, "read_mp4_frame_index", return_value=unsafe
+        ):
+            with self.assertRaisesRegex(ValueError, "frame-addressing"):
+                self.keys((0, 300))
+
+    def test_wrong_landing_refused(self):
+        """A seek that lands elsewhere raises instead of mislabelling:
+        an index claiming every frame is a keyframe asks for frame 1."""
+        lying = dataclasses.replace(
+            self.index, is_keyframe=np.ones_like(self.index.is_keyframe)
+        )
+        with mock.patch.object(
+            vqq, "read_mp4_frame_index", return_value=lying
+        ):
+            with self.assertRaisesRegex(ValueError, "returned pts"):
+                self.keys((0, 300))
+
+    def test_urls_get_timeouts(self):
+        """A URL is opened with HTTP_OPTIONS, a file with none."""
+        url = "https://example.org/clean.mp4"
+        opened, real_open = [], av.open
+
+        def fake_open(path, options):
+            """Open the local file instead; record the options."""
+            opened.append(options)
+            return real_open(str(self.path), options=options)
+
+        with (
+            mock.patch.object(vqq, "probe", return_value=probe(self.path)),
+            mock.patch.object(
+                vqq, "read_mp4_frame_index", return_value=self.index
+            ),
+            mock.patch.object(vqq.av, "open", side_effect=fake_open),
+        ):
+            vqq.sample_keyframes(url, (10, 21))
+            vqq.sample_keyframes(self.path, (10, 21))
+        self.assertEqual(opened, [vqq.HTTP_OPTIONS, {}])
+
+    def test_not_mp4_refused(self):
+        """Matroska is refused."""
+        path = write_mp4(self.tmp / "clip.mkv", n_frames=30)
+        with self.assertRaisesRegex(ValueError, "Not an MP4"):
+            vqq.sample_keyframes(path)
+
+
+# --- Checks on synthetic faults ------------------------------------------
+
+
+class CheckTest(TempDirTest):
+    """Each check passes on a clean video and fails on its fault."""
+
+    def run_video(self, name, fault=None, camera="bottom_camera"):
+        """Encode, measure and check one video; return samples, checks."""
+        path = write_mp4(self.tmp / f"{name}.mp4", fault=fault)
+        _, samples = measure_mp4(path)
+        return samples, vqq.run_checks(samples, camera)
+
+    def test_clean(self):
+        """Every check passes; the side camera also gets the clipping
+        check. Names come from the table."""
+        samples, checks = self.run_video("clean")
+        self.assertEqual(len(samples), 29)
         self.assertLess(samples["shift"].max(), 0.5)
         self.assertGreater(samples["similarity"].min(), 0.9)
-        self.assertEqual(qc.histograms.shape, (29, 256))
-        self.assertEqual(qc.reference.shape, (H, W))
-        self.assertEqual(qc.thumbnails.shape, (29, H // 2, W // 2))
-        checks, action = self.action(qc, camera="BottomCamera")
-        self.assertEqual(action, "use")
-        self.assertTrue(checks.loc[vqq.STABILITY_CHECKS, "passed"].all())
-        self.assertTrue(checks.loc[vqq.LEVEL_CHECKS, "passed"].isna().all())
-        self.assertIn("BottomCamera", checks.loc["sharp_enough", "message"])
+        self.assertEqual(vqq.quality_action(checks), "use")
+        self.assertEqual(
+            check_names(checks, True),
+            [
+                "sharpness_dev <= 0.45",
+                "mean_dev <= 0.15",
+                "similarity >= 0.7",
+                "similarity p5 < 0.998",
+            ],
+        )
+        side = vqq.run_checks(samples, "SideCameraRight")
+        self.assertEqual(
+            side["check"].iloc[-1], "pct_clipped_high median <= 3.75"
+        )
+        self.assertTrue(side["passed"].all())
+        row = side.iloc[-1]
+        self.assertEqual(
+            (row.metric, row.over, row.op, row.value),
+            ("pct_clipped_high", "median", "<=", 3.75),
+        )
+        self.assertEqual(row.observed, samples["pct_clipped_high"].median())
 
-    def test_defocus_fails_sharpness(self):
-        """Blur from frame 200 on."""
-        qc = self.measure("defocus", after(200, blur))
-        checks, action = self.action(qc)
-        self.assertEqual(action, "exclude: sharpness_stable")
-        self.assertEqual(checks.loc["sharpness_stable", "count"], 10)
+    def test_camera_view(self):
+        """Either folder layout's name; anything else matches no view."""
+        self.assertEqual(vqq.camera_view("BottomCamera"), "bottom")
+        self.assertEqual(vqq.camera_view("side_camera_right"), "side")
+        self.assertIsNone(vqq.camera_view(None))
 
-    def test_isolated_blur_is_counted_but_passes(self):
-        """One blurred keyframe (a GOP around frame 150)."""
-        qc = self.measure("blip", between(145, 155, blur))
-        checks, action = self.action(qc)
-        self.assertEqual(action, "use")
-        row = checks.loc["sharpness_stable"]
+    def test_defocus(self):
+        """Blur from frame 200 on: 10 samples in a run."""
+        _, checks = self.run_video("defocus", after(200, blur))
+        self.assertEqual(
+            vqq.quality_action(checks), "exclude: sharpness_dev <= 0.45"
+        )
+        row = checks.set_index("check").loc["sharpness_dev <= 0.45"]
+        self.assertEqual(row["observed"], 10)
+        self.assertEqual(row["samples"], list(range(19, 29)))
+
+    def test_isolated_sample_passes(self):
+        """One blurred keyframe (frame 150) is listed but passes; two
+        consecutive ones fail."""
+        _, checks = self.run_video("blip", between(145, 155, blur))
+        row = checks.set_index("check").loc["sharpness_dev <= 0.45"]
         self.assertTrue(row["passed"])
-        self.assertEqual(row["samples"], [14])
-        self.assertIn("isolated", row["message"])
+        self.assertEqual((row["observed"], row["samples"]), (0, [14]))
+        _, checks = self.run_video("blip2", between(145, 165, blur))
+        row = checks.set_index("check").loc["sharpness_dev <= 0.45"]
+        self.assertFalse(row["passed"])
+        self.assertEqual((row["observed"], row["samples"]), (2, [14, 15]))
 
-    def test_brightness_step_fails_brightness(self):
+    def test_brightness_step(self):
         """Lights brighten by 40% from frame 200."""
-        qc = self.measure("bright", after(200, lambda y: y * 1.4))
-        checks, _ = self.action(qc)
-        self.assertFalse(checks.loc["brightness_stable", "passed"])
+        _, checks = self.run_video("bright", after(200, lambda y: y * 1.4))
+        self.assertIn("mean_dev <= 0.15", check_names(checks, False))
 
-    def test_occlusion_fails_scene(self):
+    def test_occlusion(self):
         """Left half of the frame black from frame 200."""
 
         def occlude(y):
@@ -404,36 +468,19 @@ class MeasureTest(TempDirTest):
             y[:, : W // 2] = 16
             return y
 
-        qc = self.measure("occluded", after(200, occlude))
-        checks, _ = self.action(qc)
-        self.assertFalse(checks.loc["scene_stable", "passed"])
+        _, checks = self.run_video("occluded", after(200, occlude))
+        self.assertIn("similarity >= 0.7", check_names(checks, False))
 
-    def test_still_scene_fails_scene_moves(self):
-        """Every frame the same (nothing moves): only scene_moves fails."""
+    def test_still_scene(self):
+        """Every frame the same: only the "does anything move" check
+        fails."""
         still = _frame(0, _texture()).astype(float)
-        qc = self.measure("still", lambda i, y: still)
-        checks, action = self.action(qc)
-        self.assertEqual(action, "exclude: scene_moves")
-        self.assertIn("still", checks.loc["scene_moves", "message"])
-        self.assertTrue(
-            checks.loc[
-                ["sharpness_stable", "brightness_stable", "scene_stable"],
-                "passed",
-            ].all()
-        )
+        _, checks = self.run_video("still", lambda i, y: still)
+        self.assertEqual(check_names(checks, False), ["similarity p5 < 0.998"])
 
-    def test_translation_is_measured_not_checked(self):
-        """A 6 px shift is reported in ``shift``; no check fails on it."""
-        qc = self.measure(
-            "moved", after(200, lambda y: np.roll(y, (4, 6), axis=(0, 1)))
-        )
-        moved = qc.samples.loc[qc.samples["frame_index"] >= 200]
-        self.assertAlmostEqual(moved["shift_x"].median(), 6, delta=0.5)
-        self.assertAlmostEqual(moved["shift_y"].median(), 4, delta=0.5)
-        self.assertNotIn("view_stable", self.action(qc)[0].index)
-
-    def test_level_checks_with_thresholds(self):
-        """Clipped highlights fail exposure; other levels pass or fail."""
+    def test_clipping_side_camera_only(self):
+        """Saturated top quarter: fails on a side camera; a bottom camera
+        has no clipping check."""
 
         def clip(y):
             """Saturate the top quarter."""
@@ -441,200 +488,37 @@ class MeasureTest(TempDirTest):
             y[: H // 4] = 255
             return y
 
-        qc = self.measure("clipped", after(0, clip))
-        self.assertGreaterEqual(qc.summary.pct_clipped_high_med, 25)
-        checks, action = self.action(
-            qc,
-            thresholds={
-                "min_sharpness": 1e9,
-                "max_pct_clipped": 1.0,
-                "min_dynamic_range": 10,
-            },
+        samples, bottom = self.run_video("clipped", after(0, clip))
+        self.assertGreaterEqual(samples["pct_clipped_high"].median(), 25)
+        side = vqq.run_checks(samples, "side_camera_right")
+        self.assertIn(
+            "pct_clipped_high median <= 3.75", check_names(side, False)
         )
-        self.assertFalse(checks.loc["sharp_enough", "passed"])
-        self.assertFalse(checks.loc["exposure_ok", "passed"])
-        self.assertIn("clipped", checks.loc["exposure_ok", "message"])
-        self.assertTrue(checks.loc["contrast_ok", "passed"])
-        # The action names the first failed check (this tiny, mostly
-        # unchanging synthetic frame also reads as still: scene_moves).
-        first = checks.index[checks["passed"].eq(False)][0]
-        self.assertEqual(action, f"exclude: {first}")
+        self.assertNotIn("pct_clipped_high", bottom["metric"].tolist())
 
-    def test_exposure_limits(self):
-        """Too dark, too bright, and within limits."""
-        summary = mock.Mock(mean_med=50.0, pct_clipped_high_med=0.0)
-        dark = vqq.check_exposure_ok(summary, {"min_mean": 60})
-        bright = vqq.check_exposure_ok(summary, {"max_mean": 40})
-        ok = vqq.check_exposure_ok(summary, {"min_mean": 40, "max_mean": 60})
-        self.assertIn("too dark", dark["message"])
-        self.assertIn("too bright", bright["message"])
-        self.assertTrue(ok["passed"])
-
-    def test_camera_thresholds_are_looked_up(self):
-        """LEVEL_THRESHOLDS supplies thresholds by camera view, for either
-        folder layout's name."""
-        qc = self.measure("lookup")
-        with mock.patch.dict(
-            vqq.LEVEL_THRESHOLDS, {"bottom": {"min_sharpness": 0}}
-        ):
-            for camera in ["BottomCamera", "bottom_camera"]:
-                checks, _ = self.action(qc, camera=camera)
-                self.assertTrue(checks.loc["sharp_enough", "passed"])
-            checks, _ = self.action(qc, camera="FaceCamera")
-            self.assertIsNone(checks.loc["sharp_enough", "passed"])
-
-    def test_side_camera_clipping_threshold(self):
-        """Side cameras are checked for clipping by default; bottom are not."""
-        self.assertEqual(vqq.camera_view("SideCameraRight"), "side")
-        self.assertEqual(vqq.camera_view("side_camera_right"), "side")
-        self.assertIsNone(vqq.camera_view(None))
-        qc = self.measure("side_clip")
-        side, _ = self.action(qc, camera="side_camera_right")
-        bottom, _ = self.action(qc, camera="bottom_camera")
-        self.assertTrue(side.loc["exposure_ok", "passed"])
-        self.assertIsNone(bottom.loc["exposure_ok", "passed"])
-
-    def test_frame_window_recorded(self):
-        """The window limits samples and is kept in the summary."""
-        qc = self.measure("window", frame_window=(50, 151))
-        self.assertEqual(qc.summary.window_start, 50)
-        self.assertEqual(qc.summary.window_end, 151)
-        self.assertEqual(qc.samples["frame_index"].min(), 50)
-        self.assertEqual(qc.samples["frame_index"].max(), 150)
-
-    def test_fewer_keyframes_than_samples(self):
-        """A short file uses each eligible keyframe once."""
-        path = write_mp4(self.tmp / "short.mp4", n_frames=40)
-        qc = vqq.measure_video_quality(path, n_samples=100, edge_fraction=0)
-        self.assertEqual(qc.samples["frame_index"].tolist(), [10, 20, 30])
-
-    def test_not_mp4_refused(self):
-        """Matroska is refused."""
-        path = write_mp4(self.tmp / "clip.mkv", n_frames=30)
-        with self.assertRaisesRegex(ValueError, "Not an MP4"):
-            vqq.measure_video_quality(path)
-
-    def test_fps_falls_back_to_r_frame_rate(self):
-        """Without avg_frame_rate, r_frame_rate gives fps; without both,
-        fps is None."""
-        index = mock.Mock(n_samples=10, is_keyframe=np.ones(10, bool))
-        probe_json = {
-            "streams": [
-                {
-                    "pix_fmt": "yuv420p",
-                    "width": 4,
-                    "height": 2,
-                    "avg_frame_rate": "0/0",
-                    "r_frame_rate": "25/1",
-                }
-            ]
-        }
-        self.assertEqual(vqq._format_info(probe_json, index)["fps"], 25)
-        del probe_json["streams"][0]["r_frame_rate"]
-        self.assertIsNone(vqq._format_info(probe_json, index)["fps"])
-
-
-# --- Output and session --------------------------------------------------
-
-
-class OutputTest(TempDirTest):
-    """Written files and check_session."""
-
-    @classmethod
-    def setUpClass(cls):
-        """One measured video."""
-        super().setUpClass()
-        path = write_mp4(cls.tmp / "clean.mp4")
-        cls.qc = vqq.measure_video_quality(path, edge_fraction=0)
-        cls.checks = vqq.check_video_quality(cls.qc)
-
-    def test_write_and_read_back(self):
-        """JSON is valid (no NaN) and the parquet has the histograms."""
-        json_path, parquet_path = vqq.write_video_quality(
-            self.qc, self.checks, self.tmp / "out", camera="BottomCamera"
+    def test_translation_is_measured_not_checked(self):
+        """A 6 x 4 px shift is reported in ``shift``; no check reads it.
+        (On this small frame it also lowers similarity.)"""
+        samples, checks = self.run_video(
+            "moved", after(200, lambda y: np.roll(y, (4, 6), axis=(0, 1)))
         )
-        self.assertEqual(json_path.name, "video_quality_BottomCamera.json")
-        record = json.loads(json_path.read_text(), parse_constant=self.fail)
-        self.assertEqual(record["action"], "use")
-        self.assertEqual(record["camera"], "BottomCamera")
-        self.assertIn("aind_video_utils", record["versions"])
-        self.assertEqual(
-            set(record["summary"]), set(vqq.qc_result_fieldnames())
-        )
-        # Nothing reaches the floor, so that spread is undefined.
-        self.assertIsNone(record["summary"]["pct_clipped_low_spread"])
-        self.assertEqual(len(record["checks"]), 7)
-        samples = pd.read_parquet(parquet_path)
-        self.assertEqual(len(samples), len(self.qc.samples))
-        self.assertEqual(len(samples["histogram"].iloc[0]), 256)
+        moved = samples.loc[samples["frame_index"] >= 200]
+        self.assertAlmostEqual(moved["shift_x"].median(), 6, delta=0.5)
+        self.assertAlmostEqual(moved["shift_y"].median(), 4, delta=0.5)
+        self.assertNotIn("shift", checks["metric"].tolist())
 
-    def test_json_ready(self):
-        """Numpy scalars and NaN convert; other values pass through."""
-        self.assertIsNone(vqq._json_ready(np.float64("nan")))
-        self.assertEqual(vqq._json_ready(np.int64(3)), 3)
-        self.assertEqual(vqq._json_ready("x"), "x")
 
-    def test_check_session(self):
-        """Both layouts, the task window where the files exist, and an
-        unreadable file."""
-        session = self.tmp / "behavior_123456_2025-01-01_00-00-00"
-        folder = session / "behavior-videos"
-        (folder / "BottomCamera").mkdir(parents=True)
-        write_mp4(folder / "BottomCamera" / "video.mp4", n_frames=120)
-        write_video_csv(folder / "BottomCamera" / "metadata.csv", 120)
-        write_mp4(folder / "side_camera.mp4", n_frames=120)
-        (folder / "broken.mp4").write_bytes(b"not a video")
-        write_behavior_json(
-            session / "behavior" / "123456_2025-01-01_00-00-00.json", 30, 90
-        )
-        (session / "behavior" / "behavior_session_model_x.json").write_text(
-            "{}"
-        )
-        log = session / "behavior" / "raw.harp" / "BehaviorEvents"
-        log.mkdir(parents=True)
-        write_trigger_log(
-            log / "Event_94.bin", FIRST_HARP + np.arange(120) / FPS
-        )
-        table = vqq.check_session(folder, n_samples=5).set_index("camera")
-        self.assertEqual(table.loc["BottomCamera", "window"], "task")
-        self.assertEqual(table.loc["BottomCamera", "window_start"], 30)
-        self.assertEqual(table.loc["BottomCamera", "window_end"], 90)
-        self.assertEqual(
-            table.loc["side_camera", "window"], "whole file: no video CSV"
-        )
-        self.assertTrue(np.isnan(table.loc["side_camera", "window_start"]))
-        whole = vqq.check_session(folder, n_samples=5, use_task_window=False)
-        self.assertEqual(set(whole["window"]), {"whole file"})
-        self.assertEqual(
-            list(table.index), ["BottomCamera", "broken", "side_camera"]
-        )
-        self.assertEqual(table.loc["BottomCamera", "action"], "use")
-        self.assertEqual(table.loc["BottomCamera", "n_samples"], 5)
-        self.assertEqual(
-            table.loc["BottomCamera", "skipped_checks"], vqq.LEVEL_CHECKS
-        )
-        self.assertEqual(table.loc["broken", "action"], "exclude: unreadable")
-        self.assertTrue(table.loc["broken", "error"])
-
-    def test_session_window_fallbacks(self):
-        """No JSON, or no Harp trial times: whole file, with the reason."""
-        session = self.tmp / "no_json"
-        (session / "behavior").mkdir(parents=True)
-        csv = write_video_csv(session / "metadata.csv", 120)
-        self.assertEqual(
-            vqq._session_window(session, csv, None),
-            (None, "whole file: no behavior JSON"),
-        )
-        write_behavior_json(
-            session / "behavior" / "1_x.json", 30, 90, harp=False
-        )
-        window, note = vqq._session_window(session, csv, None)
-        self.assertIsNone(window)
-        self.assertIn("No Harp trial times", note)
+# --- Task window ---------------------------------------------------------
 
 
 class TaskWindowTest(TempDirTest):
     """Trial times from the session JSON, mapped to frames."""
+
+    @classmethod
+    def setUpClass(cls):
+        """A session JSON whose trials span frames 40 to 260."""
+        super().setUpClass()
+        cls.json = write_behavior_json(cls.tmp / "s.json", 40, 260)
 
     def test_read_trial_times(self):
         """NWB column names; Harp go cue preferred when present."""
@@ -655,9 +539,8 @@ class TaskWindowTest(TempDirTest):
 
     def test_read_trial_times_url(self):
         """A URL is fetched."""
-        path = write_behavior_json(self.tmp / "b" / "s.json", 30, 90)
         with mock.patch(
-            "urllib.request.urlopen", return_value=open(path, "rb")
+            "urllib.request.urlopen", return_value=open(self.json, "rb")
         ) as urlopen:
             trials = read_trial_times("https://example.org/s.json")
         urlopen.assert_called_once_with("https://example.org/s.json")
@@ -670,109 +553,139 @@ class TaskWindowTest(TempDirTest):
             behavior_time_to_frame_index([10.0, 10.2, 12.0], harp), [0, 1, 3]
         )
 
-    def test_refused_timing_without_drops_uses_raw_harp(self):
-        """A Harp clock step is refused by the correction, but with no
-        frames lost the raw column still places the task."""
-        csv = write_video_csv(self.tmp / "step.csv", 300, harp_step_at=280)
-        path = write_behavior_json(self.tmp / "d" / "s.json", 40, 260)
-        with self.assertWarns(vqq.RawHarpWindowWarning):
-            self.assertEqual(vqq.task_frame_window(path, csv), (40, 260))
-        window, note = vqq.task_window_or_whole_file(path, csv)
-        self.assertEqual(window, (40, 260))
-        self.assertTrue(note.startswith("task from raw Harp"))
-        self.assertEqual(
-            vqq.task_window_or_whole_file(path, csv.with_name("none.csv")),
-            (None, "whole file: no video CSV"),
-        )
+    def test_corrected_timing(self):
+        """No log: the corrected timing, right despite a lost frame (the
+        raw column would put the end one frame late)."""
+        csv = write_video_csv(self.tmp / "drop.csv", 300, drop_at=100)
+        self.assertEqual(task_frame_window(self.json, csv), (40, 259))
 
-    def test_refused_timing_with_drops_is_whole_file(self):
-        """Lost frames and a refused correction: no window."""
+    def test_trigger_log_by_frame_number(self):
+        """A lost frame and a Harp clock step (correction refused): each
+        row takes its exposure's log time. The log goes first even when
+        the correction would work."""
         csv = write_video_csv(
             self.tmp / "both.csv", 300, harp_step_at=280, drop_at=100
-        )
-        path = write_behavior_json(self.tmp / "e" / "s.json", 40, 260)
-        with self.assertRaises(ValueError):
-            vqq.task_frame_window(path, csv)
-        window, note = vqq.task_window_or_whole_file(path, csv)
-        self.assertIsNone(window)
-        self.assertTrue(note.startswith("whole file: "))
-
-    def test_refused_timing_with_drops_uses_trigger_log(self):
-        """Lost frames, refused correction, trigger log: each row takes
-        its exposure's log time. The drop at row 100 moves later rows one
-        frame earlier than exposure time."""
-        csv = write_video_csv(
-            self.tmp / "both2.csv", 300, harp_step_at=280, drop_at=100
         )
         triggers = FIRST_HARP + np.arange(301) / FPS
         triggers[281:] += 0.5  # the same clock step, in the log
         log = self.tmp / "Event_94_step.bin"
         write_trigger_log(log, triggers)
-        path = write_behavior_json(self.tmp / "f" / "s.json", 40, 260)
-        with self.assertWarns(vqq.RawHarpWindowWarning):
-            window = vqq.task_frame_window(path, csv, log)
-        self.assertEqual(window, (40, 259))
-        window, note = vqq.task_window_or_whole_file(path, csv, log)
-        self.assertTrue(note.startswith("task from trigger log by frame"))
+        self.assertEqual(task_frame_window(self.json, csv, log), (40, 259))
+        with mock.patch(
+            "aind_dynamic_foraging_behavior_video_analysis.video_timing_qc"
+            ".correct_video_timing"
+        ) as correct:
+            task_frame_window(self.json, csv, log)
+        correct.assert_not_called()
 
-    def test_task_frame_window(self):
-        """CSV alone and with the trigger log agree."""
+    def test_raw_harp_without_lost_frames(self):
+        """A clock step is refused by the correction; with no frames lost
+        the raw column still places the task."""
+        csv = write_video_csv(self.tmp / "step.csv", 300, harp_step_at=280)
+        self.assertEqual(task_frame_window(self.json, csv), (40, 260))
+
+    def test_refused_with_lost_frames_raises(self):
+        """Lost frames, a refused correction and no log: no window."""
+        csv = write_video_csv(
+            self.tmp / "neither.csv", 300, harp_step_at=280, drop_at=100
+        )
+        with self.assertRaises(ValueError):
+            task_frame_window(self.json, csv)
+
+    def test_no_harp_trial_times_raises(self):
+        """Older JSONs have CPU trial times only."""
+        path = write_behavior_json(self.tmp / "b" / "s.json", 40, 260, False)
+        csv = write_video_csv(self.tmp / "ok.csv", 300)
+        with self.assertRaisesRegex(ValueError, "No Harp trial times"):
+            task_frame_window(path, csv)
+
+    def test_sample_window_notes(self):
+        """The task, or the middle 50% with the reason."""
         csv = write_video_csv(self.tmp / "metadata.csv", 300)
-        path = write_behavior_json(self.tmp / "c" / "s.json", 40, 260)
-        log = self.tmp / "Event_94.bin"
-        write_trigger_log(log, FIRST_HARP + np.arange(300) / FPS)
-        self.assertEqual(vqq.task_frame_window(path, csv), (40, 260))
-        self.assertEqual(vqq.task_frame_window(path, csv, log), (40, 260))
+        self.assertEqual(
+            vqq.sample_window(self.json, csv), ((40, 260), "task")
+        )
+        self.assertEqual(
+            vqq.sample_window(None, csv),
+            (None, "middle 50%: no behavior JSON or video CSV"),
+        )
+        window, note = vqq.sample_window(self.json, self.tmp / "none.csv")
+        self.assertIsNone(window)
+        self.assertTrue(note.startswith("middle 50%: "))
+        self.assertIn("none.csv", note)
 
 
-class ReportTest(TempDirTest):
-    """Figures render; the PDF is written in the documented order."""
+# --- Output, pipeline and report -----------------------------------------
+
+
+class OutputTest(TempDirTest):
+    """video_quality end to end, written files, and the session card."""
 
     @classmethod
     def setUpClass(cls):
-        """A passing and a failing video."""
+        """One passing and one failing camera through video_quality."""
         super().setUpClass()
-        good = write_mp4(cls.tmp / "good.mp4")
-        bad = write_mp4(cls.tmp / "bad.mp4", fault=after(200, blur))
-        cls.items = []
-        for label, path, window in [
-            ("good", good, (25, 250)),
-            ("bad", bad, None),
-        ]:
-            qc = vqq.measure_video_quality(
-                path, edge_fraction=0, frame_window=window
-            )
-            cls.items.append((label, qc, vqq.check_video_quality(qc)))
+        json_path = write_behavior_json(cls.tmp / "s.json", 40, 260)
+        csv = write_video_csv(cls.tmp / "metadata.csv", 300)
+        cls.good = vqq.video_quality(
+            write_mp4(cls.tmp / "good.mp4"), "side_camera", json_path, csv
+        )
+        cls.bad = vqq.video_quality(
+            write_mp4(cls.tmp / "bad.mp4", fault=after(200, blur)), "bottom"
+        )
+
+    def test_video_quality(self):
+        """Task window when the files are given, middle 50% otherwise."""
+        frames, samples, checks, note = self.good
+        self.assertEqual(note, "task")
+        self.assertEqual(
+            samples["frame_index"].tolist(), list(range(40, 260, 10))
+        )
+        self.assertEqual(len(frames), len(samples))
+        self.assertEqual(len(checks), 5)
+        frames, samples, checks, note = self.bad
+        self.assertTrue(note.startswith("middle 50%"))
+        self.assertEqual(samples["frame_index"].iloc[0], 80)
+        self.assertEqual(
+            vqq.quality_action(checks), "exclude: sharpness_dev <= 0.45"
+        )
+
+    def test_write_and_read_back(self):
+        """The parquet keeps every column and the histograms; the JSON is
+        valid (no NaN) and holds the checks and the action."""
+        _, samples, checks, note = self.bad
+        record_path, samples_path = vqq.write_video_quality(
+            samples, checks, self.tmp / "out", "bottom_camera", note
+        )
+        self.assertEqual(record_path.name, "video_quality_bottom_camera.json")
+        self.assertEqual(
+            samples_path.name, "video_quality_bottom_camera.parquet"
+        )
+        back = pd.read_parquet(samples_path)
+        pd.testing.assert_frame_equal(
+            back.drop(columns="histogram"), samples.drop(columns="histogram")
+        )
+        np.testing.assert_array_equal(
+            np.stack(back["histogram"]), np.stack(samples["histogram"])
+        )
+        record = json.loads(record_path.read_text(), parse_constant=self.fail)
+        self.assertEqual(record["camera"], "bottom_camera")
+        self.assertEqual(record["window"], note)
+        self.assertIn("aind_video_utils", record["versions"])
+        self.assertEqual(record["action"], vqq.quality_action(checks))
+        self.assertEqual(
+            pd.DataFrame(record["checks"])["passed"].tolist(),
+            checks["passed"].tolist(),
+        )
 
     def test_session_card(self):
-        """Renders for passing and failing videos."""
-        for label, qc, checks in self.items:
-            fig = vqr.session_card(qc, checks)
-            # reference, 8 thumbnails, 4 time panels, histogram, 6 frames
+        """Renders for passing and failing cameras: reference, 8 frames,
+        3 check panels and the shift, histogram, 6 outlier panels."""
+        for frames, samples, checks, note in (self.good, self.bad):
+            fig = vqr.session_card(frames, samples, checks, f"test ({note})")
             self.assertEqual(len(fig.axes), 20)
+            fig.savefig(self.tmp / "card.png", dpi=50)
             matplotlib.pyplot.close(fig)
-
-    def test_contact_sheet(self):
-        """One row per video."""
-        fig = vqr.contact_sheet(self.items)
-        self.assertEqual(len(fig.axes), 2 * 9)
-        matplotlib.pyplot.close(fig)
-
-    def test_batch_pdf(self):
-        """Excluded first; index, contact sheet, then one card each."""
-        with mock.patch.object(vqr, "session_card", wraps=vqr.session_card):
-            path = vqr.batch_pdf(self.items, self.tmp / "batch.pdf")
-            order = [c.args[2] for c in vqr.session_card.call_args_list]
-        self.assertEqual(order, ["bad", "good"])
-        self.assertGreater(path.stat().st_size, 10_000)
-        pages = re.findall(rb"/Type\s*/Page(?!s)", path.read_bytes())
-        self.assertEqual(len(pages), 4)
-
-    def test_failed_samples_unknown_check(self):
-        """A check that is absent or passed marks nothing."""
-        _, _, checks = self.items[0]
-        self.assertEqual(vqr._failed_samples(checks, "nope"), [])
-        self.assertEqual(vqr._failed_samples(checks, "scene_stable"), [])
 
 
 if __name__ == "__main__":
