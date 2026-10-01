@@ -15,12 +15,17 @@ One row per camera is appended to ``<out>/summary.jsonl`` as each session
 finishes, so an interrupted run resumes where it stopped; ``summary.csv``
 is rebuilt from it at the end. ``--report``
 then builds ``<out>/video_quality_survey.pdf``: an index, contact sheets,
-and every session card, excluded cameras first.
+and every session card, excluded cameras first. ``--thresholds`` builds
+``<out>/video_quality_thresholds.pdf``, one page per level metric and
+camera: the distribution across sessions with 12 sessions marked from one
+extreme to the other, and a full-resolution frame from each, for picking a
+cutoff by eye.
 
 Usage::
 
     python scripts/video_quality_survey.py sessions.csv out/ --workers 8
     python scripts/video_quality_survey.py sessions.csv out/ --report
+    python scripts/video_quality_survey.py sessions.csv out/ --thresholds
 
 ``sessions.csv`` needs a ``raw_session`` column (e.g.
 ``behavior_816212_2025-12-05_13-47-41``); ``--filter-column`` keeps rows
@@ -37,7 +42,11 @@ import time
 import traceback
 import urllib.parse
 import urllib.request
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import (
+    ProcessPoolExecutor,
+    ThreadPoolExecutor,
+    as_completed,
+)
 from dataclasses import asdict
 from pathlib import Path
 
@@ -360,6 +369,180 @@ def report(out_dir, sort_by="sharpness_med"):
     print(f"wrote {path}")
 
 
+# Level metrics for the threshold pages: (session column, per-sample
+# column, label). Session values are medians over the session's samples.
+THRESHOLD_METRICS = [
+    ("contrast_rms", "RMS contrast (std / mean)"),
+    ("p1", "black level (p1 luma)"),
+    ("mean", "mean luma"),
+    ("sharpness", "sharpness (Laplacian variance, 2x down)"),
+    ("noise_sigma", "noise sigma"),
+    ("pct_clipped_high", "% of pixels clipped at the ceiling"),
+    ("dynamic_range", "dynamic range (p99 - p1)"),
+    ("entropy_bits", "entropy (bits)"),
+]
+THRESHOLD_PERCENTILES = [0, 1, 3, 5, 10, 25, 50, 75, 90, 95, 99, 100]
+
+
+def _view(camera):
+    """``bottom`` or ``side`` for either folder layout's camera name."""
+    return "bottom" if camera.lower().startswith("bottom") else "side"
+
+
+def _session_table(out_dir):
+    """One row per measured camera with session medians of every
+    threshold metric and the per-sample table kept for frame choice."""
+    rows = [json.loads(line) for line in (out_dir / "summary.jsonl").open()]
+    table = []
+    for r in rows:
+        if r["action"] in ("error", "no mp4"):
+            continue
+        p = (
+            out_dir
+            / r["session"]
+            / f"video_quality_{r['camera']}_samples.parquet"
+        )
+        if not p.exists():
+            continue
+        samples = pd.read_parquet(
+            p, columns=["frame_index"] + [m for m, _ in THRESHOLD_METRICS]
+        )
+        table.append(
+            {
+                "session": r["session"],
+                "camera": r["camera"],
+                "view": _view(r["camera"]),
+                "mp4": r["mp4"],
+                "samples": samples,
+                **{m: samples[m].median() for m, _ in THRESHOLD_METRICS},
+            }
+        )
+    return pd.DataFrame(table)
+
+
+def _fetch_frame(mp4_key, frame_index, cache):
+    """Full-resolution luma of one keyframe, cached on disk."""
+    path = cache / f"{mp4_key.replace('/', '__')}__{frame_index}.npy"
+    if path.exists():
+        return np.load(path)
+    url = f"{BUCKET}/{urllib.parse.quote(mp4_key)}"
+    index = vqq.read_mp4_frame_index(url)
+    luma = vqq.read_keyframes(url, index, [frame_index])[0][1]
+    np.save(path, luma)
+    return luma
+
+
+def _picks(group, metric):
+    """Sessions at THRESHOLD_PERCENTILES of ``metric``, unique, sorted,
+    each with the keyframe closest to its own median."""
+    ordered = group.sort_values(metric).reset_index(drop=True)
+    ranks = sorted(
+        {
+            int(round(q / 100 * (len(ordered) - 1)))
+            for q in THRESHOLD_PERCENTILES
+        }
+    )
+    picks = []
+    for rank in ranks:
+        r = ordered.iloc[rank]
+        s = r["samples"]
+        i = int((s[metric] - r[metric]).abs().idxmin())
+        picks.append((rank, r, int(s["frame_index"][i])))
+    return picks
+
+
+def _threshold_page(group, metric, label, view, frames):
+    """Distribution strip plus the picked frames, numbered in order."""
+    picks = _picks(group, metric)
+    fig = plt.figure(figsize=vqr.PAGE_SIZE, facecolor="white")
+    fig.text(
+        0.01,
+        0.985,
+        f"{view} camera: {label}   (n = {len(group)} sessions; "
+        "frames are each marked session's most typical keyframe)",
+        fontsize=11,
+        va="top",
+    )
+    ax = fig.add_axes([0.05, 0.80, 0.92, 0.13])
+    values = group[metric].to_numpy()
+    jitter = np.random.default_rng(0).uniform(-0.3, 0.3, len(values))
+    ax.scatter(values, jitter, s=8, color="#898781", alpha=0.5, lw=0)
+    for k, (_, r, _) in enumerate(picks, 1):
+        ax.scatter([r[metric]], [0], s=60, color="#2a78d6", zorder=3, lw=0)
+        ax.annotate(
+            str(k),
+            (r[metric], 0),
+            xytext=(0, 9 if k % 2 else -14),
+            textcoords="offset points",
+            ha="center",
+            fontsize=8,
+            color="#0b0b0b",
+        )
+    ax.set_yticks([])
+    ax.set_ylim(-0.7, 0.7)
+    ax.spines[["top", "right", "left"]].set_visible(False)
+    ax.tick_params(labelsize=8, colors="#52514e")
+    grid = fig.add_gridspec(
+        3,
+        4,
+        left=0.01,
+        right=0.99,
+        top=0.74,
+        bottom=0.01,
+        wspace=0.02,
+        hspace=0.14,
+    )
+    for k, (rank, r, frame_index) in enumerate(picks):
+        ax = fig.add_subplot(grid[k // 4, k % 4])
+        luma = frames[(r["mp4"], frame_index)]
+        if metric == "pct_clipped_high":
+            gray = np.clip((luma - 16) / 219, 0, 1)
+            rgb = np.repeat(gray[..., None], 3, axis=2)
+            rgb[luma >= 235] = (0.82, 0.23, 0.23)
+            ax.imshow(rgb)
+        else:
+            ax.imshow(luma, cmap="gray", vmin=16, vmax=235)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        pct = 100 * rank / max(len(group) - 1, 1)
+        ax.set_title(
+            f"#{k + 1}  {r[metric]:.3g}  (p{pct:.0f})   "
+            f"{r['session'][9:26]}",
+            fontsize=8,
+            pad=2,
+        )
+    return fig
+
+
+def threshold_pages(out_dir, workers=8):
+    """Write ``video_quality_thresholds.pdf`` (see the module docstring)."""
+    out_dir = Path(out_dir)
+    table = _session_table(out_dir)
+    cache = out_dir / "threshold_frames"
+    cache.mkdir(exist_ok=True)
+    needed = {
+        (r["mp4"], frame_index)
+        for view, group in table.groupby("view")
+        for metric, _ in THRESHOLD_METRICS
+        for _, r, frame_index in _picks(group, metric)
+    }
+    print(f"{len(table)} cameras; fetching {len(needed)} frames")
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(_fetch_frame, mp4, fi, cache): (mp4, fi)
+            for mp4, fi in needed
+        }
+        frames = {futures[f]: f.result() for f in as_completed(futures)}
+    path = out_dir / "video_quality_thresholds.pdf"
+    with PdfPages(path) as pdf:
+        for metric, label in THRESHOLD_METRICS:
+            for view, group in table.groupby("view"):
+                fig = _threshold_page(group, metric, label, view, frames)
+                pdf.savefig(fig, dpi=150)
+                plt.close(fig)
+    print(f"wrote {path}")
+
+
 def main():
     """Command line entry point."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
@@ -370,9 +553,13 @@ def main():
     parser.add_argument("--samples", type=int, default=100)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--report", action="store_true")
+    parser.add_argument("--thresholds", action="store_true")
     args = parser.parse_args()
     if args.report:
         report(args.out)
+        return
+    if args.thresholds:
+        threshold_pages(args.out, args.workers)
         return
     table = pd.read_csv(args.sessions)
     if args.filter_column:

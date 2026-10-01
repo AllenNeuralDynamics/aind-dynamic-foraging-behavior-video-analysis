@@ -104,11 +104,15 @@ from aind_dynamic_foraging_behavior_video_analysis.video_alignment import (
     read_trial_times,
 )
 
-# Stability tolerances, relative to the session's own median. First guesses
-# (2026-09-30); to be set from the population survey (plan, Phase 2).
-SHARPNESS_TOLERANCE = 0.30
+# Stability tolerances, relative to the session's own median. Set from the
+# survey of 301 FIP sessions (602 cameras, 2026-09-30): at the first guesses
+# (sharpness 0.30, similarity 0.8) a spout move or a posture change excluded
+# 5 healthy cameras; at these values only real failures are excluded (IR off
+# for 14 min, an empty rig). See VIDEO_QUALITY_QC_PLAN.md, "Findings: full
+# survey".
+SHARPNESS_TOLERANCE = 0.45
 BRIGHTNESS_TOLERANCE = 0.15
-MIN_SIMILARITY = 0.8
+MIN_SIMILARITY = 0.7
 
 # Level thresholds per camera: min_sharpness, min_mean, max_mean,
 # max_pct_clipped (median % of pixels at or above the tagged ceiling),

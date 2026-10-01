@@ -1,10 +1,11 @@
 # Plan: `video_quality_qc` — image-quality QC of behavior videos
 
-> Status: revision 5 (2026-09-30). Phase 1 implemented (`video_quality_qc`,
-> `video_quality_report`, tests, `examples/video_quality_qc_validation.ipynb`). Phase 2's first
-> survey (97 FIP sessions, 194 cameras) done; see "Findings: Phase 2 survey". Calibration of
-> level thresholds is blocked on bad examples (none found) and on whole-frame sharpness tracking
-> the scene; Phases 3–4 not started. Revision 2 recorded the decisions on revision 1's open questions (see "Decisions").
+> Status: revision 6 (2026-09-30). Phase 1 implemented (`video_quality_qc`,
+> `video_quality_report`, tests, `examples/video_quality_qc_validation.ipynb`). Phase 2 surveys
+> done: 97 FIP sessions ("Findings: Phase 2 survey"), then all 301 in the curated list ("Findings:
+> full survey"), which set the stability tolerances (sharpness 0.45, similarity 0.7). Level
+> thresholds are being picked by eye from `video_quality_thresholds.pdf` (one page per metric and
+> camera, frames across the distribution). Phases 3–4 not started. Revision 2 recorded the decisions on revision 1's open questions (see "Decisions").
 > Revision 3 recorded what the first real session changed (see "Findings: first real session"):
 > `view_stable` is dropped (a lick-spout move reads as a camera shift), `similarity` is a plain
 > correlation, clipping is counted at the tagged range, luma is read from the coded plane.
@@ -223,6 +224,48 @@ cameras show many 3-strip samples (noise from dark or mouse-filled strips, and s
 as expected) and no clear case. Whether 3–4 px matters depends on the consumer (keypoint
 models trained on a fixed view); a side-camera check (all four strips > 2 px on ≥ 2
 consecutive samples) would catch this case with no false positives in this survey.
+
+## Findings: full survey (revision 6)
+
+All 301 sessions in `me_sessions_fip_curated.csv` (602 cameras), same method, in
+`video_quality_qc_data/survey_fip/` (113 min with 8 workers; 4 cameras hit transient network
+errors and passed on re-run). Task windows: 532 corrected timing, 44 raw Harp, 21 trigger log by
+frame number, 1 whole file (`808057_2025-09-03` side camera: its video CSV has missing values,
+which `load_video_timing` refuses).
+
+At the first-guess tolerances 8 cameras were excluded. Their cards:
+
+| Camera | Check | What it is | Verdict |
+|---|---|---|---|
+| `820688_2026-01-27` bottom and side | sharpness, brightness, scene | Video nearly black for the first 14 min of the task (9–23 min), then normal: IR light off at the start, both cameras | **real** |
+| `808057_2025-09-03` side | sharpness | Empty rig at the end; no task window (CSV with missing values) | window failure |
+| `800886_2025-09-08` bottom | scene | Spouts move 24 px at 20 min; similarity to the pre-move reference then sits at 0.79–0.80 | false positive |
+| `815334_2025-10-23`, `818585_2026-01-27` bottom | scene | Similarity hovering at 0.78–0.80 for 10–87 samples, the same pattern | false positive |
+| `808057_2025-08-22` side | scene | Posture change (paws up) in the last 10 min, similarity 0.70–0.80 | false positive |
+| `813929_2025-11-04` bottom | sharpness | 40% low for the first 3 min of the task, with a 72 px (spout) shift at 11:49 | ambiguous |
+
+Exclusions across all 602 cameras by tolerance (two consecutive samples beyond it):
+
+| Setting | Excluded |
+|---|---|
+| sharpness 0.30 / 0.45 | 4 / 3 (0.45 drops 813929) |
+| similarity 0.8 / 0.75 / 0.7 | 7 / 4 / 3 |
+| brightness 0.15 | 3 |
+
+At sharpness 0.45 and similarity 0.7 every check excludes exactly the same 3 cameras (820688
+both, 808057 09-03 side), so these are now the defaults. The synthetic faults in the tests are
+still caught.
+
+**A failure no check sees: a camera not looking at the mouse.** `816212_2025-12-23`'s bottom
+camera shows a static scene with no mouse (a bar and a dark ring) for the whole task, while its
+side camera is normal. Every check passes because nothing changes: similarity p5 0.9996 (next
+highest of 301 bottom cameras 0.991; side cameras at most 0.947), shift 0.05 px, and sharpness
+23 (next lowest 61). Found on the threshold pages, not by the checks. A "does anything move?"
+check (similarity p5 above ~0.995 means a still scene) would catch it; one example so far.
+
+Note for the card: the reference frame is the median of the first 10 samples, so when the
+first minutes are abnormal (820688's dark start) every later, normal sample reads as dissimilar.
+The exclusion is still right, but the time course points at the wrong part of the session.
 
 ## Background: the MP4
 
