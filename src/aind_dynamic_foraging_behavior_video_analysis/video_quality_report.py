@@ -30,8 +30,6 @@ from matplotlib.figure import Figure
 
 from aind_dynamic_foraging_behavior_video_analysis.video_quality_qc import (
     BRIGHTNESS_TOLERANCE,
-    EDGE_SHIFT_PX,
-    EDGES,
     MIN_SIMILARITY,
     SHARPNESS_TOLERANCE,
     VideoQualityResult,
@@ -180,13 +178,6 @@ def _time_course(fig, spec, qc, checks) -> None:
         ),
         ("similarity", "similarity to reference", "scene_stable", None),
         ("shift", "shift from reference, px (reported only)", None, None),
-        (
-            "edges_shifted",
-            f"border strips shifted > {EDGE_SHIFT_PX:g} px, of "
-            f"{len(EDGES)} (reported only)",
-            None,
-            None,
-        ),
     ]
     grid = spec.subgridspec(len(panels), 1, hspace=0.35)
     for i, (metric, ylabel, check, tol) in enumerate(panels):
@@ -197,12 +188,7 @@ def _time_course(fig, spec, qc, checks) -> None:
             ax.axhspan(100 * (1 - tol), 100 * (1 + tol), color=BAND, lw=0)
         if metric == "similarity":
             ax.axhspan(MIN_SIMILARITY, 1, color=BAND, lw=0)
-        if metric == "edges_shifted":
-            ax.step(minutes, values, where="mid", color=INK, lw=1.2)
-            ax.set_ylim(-0.3, len(EDGES) + 0.3)
-            ax.set_yticks(range(len(EDGES) + 1))
-        else:
-            ax.plot(minutes, values, color=INK, lw=1.2)
+        ax.plot(minutes, values, color=INK, lw=1.2)
         bad = _failed_samples(checks, check) if check else []
         if bad:
             ax.plot(

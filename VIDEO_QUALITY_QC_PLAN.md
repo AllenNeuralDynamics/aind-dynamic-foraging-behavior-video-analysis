@@ -1,11 +1,10 @@
 # Plan: `video_quality_qc` — image-quality QC of behavior videos
 
-> Status: revision 6 (2026-09-30). Phase 1 implemented (`video_quality_qc`,
-> `video_quality_report`, tests, `examples/video_quality_qc_validation.ipynb`). Phase 2 surveys
-> done: 97 FIP sessions ("Findings: Phase 2 survey"), then all 301 in the curated list ("Findings:
-> full survey"), which set the stability tolerances (sharpness 0.45, similarity 0.7). Level
-> thresholds are being picked by eye from `video_quality_thresholds.pdf` (one page per metric and
-> camera, frames across the distribution). Phases 3–4 not started. Revision 2 recorded the decisions on revision 1's open questions (see "Decisions").
+> Status: revision 7 (2026-10-01). Phases 1–2 done. Surveys of 97, then all 301 curated FIP
+> sessions set the stability tolerances (sharpness 0.45, similarity 0.7); revision 7 records the
+> calibration decisions ("Decisions: calibration"): a `scene_moves` check, a side camera
+> clipping cutoff of 3.75%, no other level cutoffs, border strips removed, dirty mirror a known
+> gap. Next: code review, then Phase 3 (integration). Phase 4 not started. Revision 2 recorded the decisions on revision 1's open questions (see "Decisions").
 > Revision 3 recorded what the first real session changed (see "Findings: first real session"):
 > `view_stable` is dropped (a lick-spout move reads as a camera shift), `similarity` is a plain
 > correlation, clipping is counted at the tagged range, luma is read from the coded plane.
@@ -144,7 +143,7 @@ The task ran from frame 280,988 to 2,388,169 of the bottom camera, **9.4 to 79.6
 both cameras pass (sharpness spread 0.26 / 0.16, brightness spread 0.03 / 0.06, similarity p5
 0.91 / 0.91).
 
-**Border strips.** Shift per 48 px border strip, reported only (`edge_<side>_x/_y`,
+**Border strips** (removed in revision 7). Shift per 48 px border strip, reported only (`edge_<side>_x/_y`,
 `edge_<side>`, `edge_<side>_peak`, and `edges_shifted`, the count above 3 px), for a survey of
 whether cameras ever move before designing a check:
 
@@ -267,6 +266,42 @@ Note for the card: the reference frame is the median of the first 10 samples, so
 first minutes are abnormal (820688's dark start) every later, normal sample reads as dissimilar.
 The exclusion is still right, but the time course points at the wrong part of the session.
 
+## Decisions: calibration (revision 7)
+
+Made on 2026-10-01 from the full survey and its threshold pages
+(`video_quality_survey.py --thresholds`: per metric and camera, frames from sessions across the
+distribution, for picking a cutoff by eye).
+
+- **`scene_moves` (new check).** Fails when the similarity p5 to the reference is at least 0.998:
+  nothing in view moves. On the 602 cameras it fails only `816212_2025-12-23`'s bottom camera
+  (0.9996, no mouse in view). The stillest camera on a live mouse is `813929_2025-10-30`'s
+  bottom camera at 0.991: a mouse barely in frame (snout and whiskers at the left edge). The
+  margin is narrower than the numbers suggest; a mouse further out of frame could approach the
+  cutoff, which would arguably still deserve a look.
+- **Side camera clipping: `max_pct_clipped` 3.75%.** On the threshold page, below ~1.5% only rig
+  hardware clips (a fixed ~1.4%); at 2–3% the paws saturate; from ~3.9% the jaw, mouth and ear
+  saturate in large patches, losing tongue and jaw detail. 36 of 301 side cameras exceed 3.75%,
+  mostly two subjects (818586: 19, 809487: 14), so it is largely per-subject lighting or
+  positioning. Thresholds are keyed by camera view (`camera_view`: bottom or side), since the
+  two folder layouts name the same camera differently.
+- **No other level cutoffs.** Across sessions, sharpness, brightness, black level, contrast,
+  dynamic range and entropy track the scene (background, rig, subject) more than quality, and
+  the threshold pages showed no level where frames turn bad. Bottom camera clipping is ~0
+  everywhere.
+- **Border strips removed.** They answered their question: cameras do move, but rarely (one case
+  in 301 side cameras) and by 3–4 px, which is not visible by eye. The whole-frame `shift` stays,
+  reported only.
+- **Dirty bottom mirror: known gap, no check.** It looks like bokeh speckles across the
+  background plus haze. Within-rig ranks of entropy, mean luma and black level rising together
+  find it (809491 Oct 1–13; on rig 446_8D 800886 2025-09-09, 813929 2025-10-21, 818580
+  2025-12-01, where it seems to build up and get cleaned in cycles), but also rank bright
+  backgrounds (a card on rig 447_3D), the lights-off session and dark soft sessions as highly.
+  Extremes of mean luma correlate with it but are not robust. Rig ids come from each raw asset's
+  `session.json` (`rig_id`, e.g. `446_7D_20251007` = room 446, box 7D). **Idea to try:**
+  measure contrast in a fixed region, e.g. the bottom right corner of every frame (background
+  seen through the mirror, away from the mouse and spouts), instead of the whole frame, so the
+  mouse and rig hardware do not dilute it.
+
 ## Background: the MP4
 
 Checked on `behavior_816212_2025-12-05_13-47-41` (public, `s3://aind-open-data`),
@@ -353,7 +388,6 @@ sensor noise.
 | `noise_sigma` | Immerkær fast noise estimate on full-res luma | gain change, low light; explains a noisy frame that scores as "sharp" |
 | `similarity` | Pearson correlation of `d` with the reference | occlusion, lens cap, lights or IR off, empty rig, large bumps |
 | `shift_x`, `shift_y`, `shift` | phase correlation (Hann window, parabolic sub-pixel peak) of the full-res frame against the reference | **reported only**: a spout move reads the same as a camera bump (Findings 2) |
-| `edge_<side>_x`, `_y`, `edge_<side>`, `edge_<side>_peak`, `edges_shifted` | the same per 48 px border strip, with the correlation peak height; count of strips over 3 px | **reported only**, for the camera-shift survey (revision 4 Findings) |
 | `histogram` | 256 luma counts | report histogram; re-deriving any percentile later |
 
 **Reference frame**: the pixel-wise median of the first 10 samples. The median ignores a moving
@@ -523,16 +557,12 @@ a few hundred frames) from a textured pattern with a moving blob. Cases:
 
 ## Open questions
 
-- **View shift.** Cameras do move (one 3–4 px case in 97 side cameras). Add a side-camera
-  check (all four strips agree, sustained)? Does a 3–4 px shift matter to the consumers?
-- **Level thresholds.** Whole-frame levels track the scene (818586's background change halved
-  sharpness with no loss of focus). Options: an ROI on the mouse, per-subject baselines
-  (flag a step against the subject's own sessions), or no level checks until a real bad
-  session turns up.
-- **More sessions.** No bad examples in 97 FIP sessions. Survey the 301 in the curated list
-  (or the LP sessions) to find some before calibrating further?
-- Stability tolerances: no false exclusions at the current values; loosen only if Phase 3
-  finds some (see revision 5 margins).
+- **Dirty mirror.** Try contrast in a fixed background region (bottom right corner) of the
+  bottom camera; see "Decisions: calibration".
+- **Sharpness as focus.** Whole-frame sharpness tracks the background; a region on the mouse
+  (fixed, or from keypoints) would be needed for a focus check.
+- **Phase 3:** opt-in exclusion first; watch for false exclusions from the tolerances and the
+  clipping cutoff on sessions outside the surveyed set.
 
 ## Out of scope
 

@@ -21,16 +21,7 @@ Metrics per sampled keyframe (luma only; the cameras are monochrome):
 - ``shift_x``, ``shift_y``, ``shift``: phase-correlation shift from the
   reference, in pixels. Reported only: on the bottom camera the motorized
   lick spouts dominate it, so a spout move reads as a 14 px shift while
-  the camera stays put (``VIDEO_QUALITY_QC_PLAN.md``, "Findings");
-- ``edge_<side>_x``, ``edge_<side>_y``, ``edge_<side>``,
-  ``edge_<side>_peak`` (confidence, see :func:`phase_correlation`) for ``top``,
-  ``bottom``, ``left``, ``right``: the same shift estimated in each
-  ``EDGE_STRIP_PX`` border strip alone. Reported only, for a survey of
-  whether cameras ever move: a camera bump moves every textured strip
-  together, a spout move only the strips it crosses. ``edges_shifted``
-  counts the strips shifted by more than ``EDGE_SHIFT_PX``. On the bottom
-  camera the only strip with a strong peak is the one the spouts cross;
-  the others are dark or hold the mouse and give noisy estimates.
+  the camera stays put (``VIDEO_QUALITY_QC_PLAN.md``, "Findings").
 
 Checks, one question each (:func:`check_video_quality` runs them all):
 
@@ -44,8 +35,9 @@ Checks, one question each (:func:`check_video_quality` runs them all):
   matches its reference as closely as ``MAX_STILL_SIMILARITY`` on 95% of
   samples; a camera pointed away from the mouse does.
 - ``sharp_enough``, ``exposure_ok``, ``contrast_ok``: are the session
-  medians within the level thresholds for this camera? Skipped when no
-  threshold exists (see ``LEVEL_THRESHOLDS``).
+  medians within the level thresholds for this camera's view (bottom or
+  side, :func:`camera_view`)? Skipped when no threshold exists (see
+  ``LEVEL_THRESHOLDS``).
 
 A single sample out of tolerance is counted but does not fail a stability
 check (a paw in front of the lens); two consecutive samples do.
@@ -122,20 +114,19 @@ MIN_SIMILARITY = 0.7
 # 0.9996; every camera on a mouse at most 0.991 (bottom) or 0.947 (side).
 MAX_STILL_SIMILARITY = 0.998
 
-# Level thresholds per camera: min_sharpness, min_mean, max_mean,
-# max_pct_clipped (median % of pixels at or above the tagged ceiling),
-# min_dynamic_range. Empty until calibrated on the
-# population (plan, Phase 2); level checks are skipped without them.
-LEVEL_THRESHOLDS: dict[str, dict[str, float]] = {}
+# Level thresholds per camera view (see camera_view): min_sharpness,
+# min_mean, max_mean, max_pct_clipped (median % of pixels at or above the
+# tagged ceiling), min_dynamic_range. A check is skipped when its threshold
+# is absent. Side camera clipping: picked by eye on the 301-session survey's
+# threshold pages (2026-10-01); above ~3.75% the jaw, mouth and paws
+# saturate (36 of 301 side cameras, mostly two subjects). Other levels track
+# the scene more than quality (plan, "Findings: full survey").
+LEVEL_THRESHOLDS: dict[str, dict[str, float]] = {
+    "side": {"max_pct_clipped": 3.75},
+}
 
 # The reference frame is the pixel-wise median of this many first samples.
 REFERENCE_SAMPLES = 10
-
-# Width of each border strip for the per-edge shifts (full-res pixels).
-EDGE_STRIP_PX = 48
-EDGES = ["top", "bottom", "left", "right"]
-# A strip counts toward ``edges_shifted`` above this shift (reported only).
-EDGE_SHIFT_PX = 3.0
 
 # Fraction of the file skipped at each end (aind-video-utils default).
 DEFAULT_EDGE_FRACTION = 0.01
@@ -389,16 +380,13 @@ def _parabolic_offset(left: float, centre: float, right: float) -> float:
     return 0.0 if denom == 0 else 0.5 * (left - right) / denom
 
 
-def phase_correlation(
+def phase_shift(
     reference: npt.ArrayLike, image: npt.ArrayLike
-) -> tuple[float, float, float]:
-    """Return the ``(dx, dy, peak)`` translation of ``image``.
+) -> tuple[float, float]:
+    """Return the ``(dx, dy)`` translation of ``image`` from ``reference``.
 
     Phase correlation with a Hann window and parabolic sub-pixel peak
-    interpolation. Positive ``dx`` means the content moved right. ``peak``
-    (0-1) is the height of the correlation peak: near 1 for a clean
-    translation of textured content, low for featureless or changing
-    content, where the shift is unreliable.
+    interpolation. Positive ``dx`` means the content moved right.
     """
     ref = np.asarray(reference, dtype=np.float64)
     img = np.asarray(image, dtype=np.float64)
@@ -422,39 +410,7 @@ def phase_correlation(
     # Peaks past the midpoint are negative shifts (the FFT wraps around).
     dy = dy - h if dy > h / 2 else dy
     dx = dx - w if dx > w / 2 else dx
-    return float(dx), float(dy), float(corr[peak_y, peak_x])
-
-
-def phase_shift(
-    reference: npt.ArrayLike, image: npt.ArrayLike
-) -> tuple[float, float]:
-    """Return the ``(dx, dy)`` translation of ``image`` from ``reference``
-    (see :func:`phase_correlation`)."""
-    dx, dy, _ = phase_correlation(reference, image)
-    return dx, dy
-
-
-def edge_strips(image: npt.ArrayLike, width: int = EDGE_STRIP_PX) -> dict:
-    """The four border strips of an image, ``width`` pixels deep."""
-    y = np.asarray(image)
-    return {
-        "top": y[:width],
-        "bottom": y[-width:],
-        "left": y[:, :width],
-        "right": y[:, -width:],
-    }
-
-
-def edge_shifts(
-    reference: npt.ArrayLike, image: npt.ArrayLike, width: int = EDGE_STRIP_PX
-) -> dict[str, tuple[float, float, float]]:
-    """Phase-correlation ``(dx, dy, peak)`` of each border strip separately.
-
-    A strip can only resolve shifts under half its depth across it.
-    """
-    ref = edge_strips(reference, width)
-    img = edge_strips(image, width)
-    return {edge: phase_correlation(ref[edge], img[edge]) for edge in EDGES}
+    return float(dx), float(dy)
 
 
 def similarity(reference: npt.ArrayLike, image: npt.ArrayLike) -> float:
@@ -713,15 +669,6 @@ def measure_video_quality(
     for i, (frame_index, (pts, luma)) in enumerate(zip(chosen, decoded)):
         stats = frame_quality_stats(luma, color_range, bit_depth)
         dx, dy = phase_shift(reference, luma)
-        edges = {}
-        for edge, (ex, ey, peak) in edge_shifts(reference, luma).items():
-            edges[f"edge_{edge}_x"] = ex
-            edges[f"edge_{edge}_y"] = ey
-            edges[f"edge_{edge}"] = float(np.hypot(ex, ey))
-            edges[f"edge_{edge}_peak"] = peak
-        edges["edges_shifted"] = sum(
-            edges[f"edge_{edge}"] > EDGE_SHIFT_PX for edge in EDGES
-        )
         rows.append(
             {
                 "sample": i,
@@ -741,7 +688,6 @@ def measure_video_quality(
                 "shift_y": dy,
                 "shift": float(np.hypot(dx, dy)),
                 "similarity": similarity(reference_small, downsample2(luma)),
-                **edges,
             }
         )
     samples = pd.DataFrame(rows)
@@ -844,6 +790,17 @@ def check_scene_stable(similarity, min_similarity=MIN_SIMILARITY) -> dict:
     )
 
 
+def camera_view(camera) -> str | None:
+    """``"bottom"`` or ``"side"`` from a camera name in either folder layout
+    (``bottom_camera``, ``BottomCamera``, ``side_camera_right``,
+    ``SideCameraRight``); None for anything else."""
+    name = str(camera or "").lower()
+    for view in ("bottom", "side"):
+        if name.startswith(view):
+            return view
+    return None
+
+
 def _skipped(check, camera) -> dict:
     """A level check with no threshold for this camera."""
     return _result(check, None, f"no threshold for camera {camera!r}")
@@ -912,7 +869,8 @@ def check_video_quality(
     qc : VideoQualityResult
         From :func:`measure_video_quality`.
     camera : str, optional
-        Looks up level thresholds in ``LEVEL_THRESHOLDS``.
+        Looks up level thresholds in ``LEVEL_THRESHOLDS`` by its view
+        (:func:`camera_view`).
     thresholds : dict, optional
         Level thresholds to use instead of the camera's.
 
@@ -924,7 +882,7 @@ def check_video_quality(
         numbers).
     """
     if thresholds is None:
-        thresholds = LEVEL_THRESHOLDS.get(camera, {})
+        thresholds = LEVEL_THRESHOLDS.get(camera_view(camera), {})
     s = qc.samples
     results = [
         check_sharpness_stable(s["sharpness"]),

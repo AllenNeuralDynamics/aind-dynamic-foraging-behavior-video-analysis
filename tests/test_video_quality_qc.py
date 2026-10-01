@@ -229,18 +229,6 @@ class FrameMetricTest(unittest.TestCase):
         """A flat neighbourhood gives no offset."""
         self.assertEqual(vqq._parabolic_offset(1.0, 1.0, 1.0), 0.0)
 
-    def test_edge_shifts_see_only_their_strip(self):
-        """Moving the right border only shows in the right strip."""
-        t = _texture()
-        moved = t.copy()
-        moved[:, -40:] = np.roll(t, (0, 5), axis=(0, 1))[:, -40:]
-        shifts = vqq.edge_shifts(t, moved, width=40)
-        self.assertAlmostEqual(shifts["right"][0], 5, delta=0.5)
-        for edge in ["top", "bottom", "left"]:
-            self.assertLess(np.hypot(*shifts[edge][:2]), 5)
-        self.assertLess(np.hypot(*shifts["left"][:2]), 0.5)
-        self.assertGreater(shifts["left"][2], 0.9)
-
     def test_similarity(self):
         """1 for identical, 0 when either image is flat."""
         t = _texture()
@@ -443,16 +431,6 @@ class MeasureTest(TempDirTest):
         self.assertAlmostEqual(moved["shift_x"].median(), 6, delta=0.5)
         self.assertAlmostEqual(moved["shift_y"].median(), 4, delta=0.5)
         self.assertNotIn("view_stable", self.action(qc)[0].index)
-        for edge in vqq.EDGES:
-            self.assertAlmostEqual(
-                moved[f"edge_{edge}_x"].median(), 6, delta=0.5
-            )
-            self.assertAlmostEqual(
-                moved[f"edge_{edge}_y"].median(), 4, delta=0.5
-            )
-        self.assertTrue((moved["edges_shifted"] == 4).all())
-        still = qc.samples.loc[qc.samples["frame_index"] < 200]
-        self.assertTrue((still["edges_shifted"] == 0).all())
 
     def test_level_checks_with_thresholds(self):
         """Clipped highlights fail exposure; other levels pass or fail."""
@@ -493,13 +471,28 @@ class MeasureTest(TempDirTest):
         self.assertTrue(ok["passed"])
 
     def test_camera_thresholds_are_looked_up(self):
-        """LEVEL_THRESHOLDS supplies a camera's thresholds."""
+        """LEVEL_THRESHOLDS supplies thresholds by camera view, for either
+        folder layout's name."""
         qc = self.measure("lookup")
         with mock.patch.dict(
-            vqq.LEVEL_THRESHOLDS, {"Cam": {"min_sharpness": 0}}
+            vqq.LEVEL_THRESHOLDS, {"bottom": {"min_sharpness": 0}}
         ):
-            checks, _ = self.action(qc, camera="Cam")
-        self.assertTrue(checks.loc["sharp_enough", "passed"])
+            for camera in ["BottomCamera", "bottom_camera"]:
+                checks, _ = self.action(qc, camera=camera)
+                self.assertTrue(checks.loc["sharp_enough", "passed"])
+            checks, _ = self.action(qc, camera="FaceCamera")
+            self.assertIsNone(checks.loc["sharp_enough", "passed"])
+
+    def test_side_camera_clipping_threshold(self):
+        """Side cameras are checked for clipping by default; bottom are not."""
+        self.assertEqual(vqq.camera_view("SideCameraRight"), "side")
+        self.assertEqual(vqq.camera_view("side_camera_right"), "side")
+        self.assertIsNone(vqq.camera_view(None))
+        qc = self.measure("side_clip")
+        side, _ = self.action(qc, camera="side_camera_right")
+        bottom, _ = self.action(qc, camera="bottom_camera")
+        self.assertTrue(side.loc["exposure_ok", "passed"])
+        self.assertIsNone(bottom.loc["exposure_ok", "passed"])
 
     def test_frame_window_recorded(self):
         """The window limits samples and is kept in the summary."""
@@ -755,8 +748,8 @@ class ReportTest(TempDirTest):
         """Renders for passing and failing videos."""
         for label, qc, checks in self.items:
             fig = vqr.session_card(qc, checks)
-            # reference, 8 thumbnails, 5 time panels, histogram, 6 frames
-            self.assertEqual(len(fig.axes), 21)
+            # reference, 8 thumbnails, 4 time panels, histogram, 6 frames
+            self.assertEqual(len(fig.axes), 20)
             matplotlib.pyplot.close(fig)
 
     def test_contact_sheet(self):

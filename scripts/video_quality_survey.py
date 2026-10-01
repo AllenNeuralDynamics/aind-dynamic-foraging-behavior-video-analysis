@@ -214,13 +214,6 @@ def run_camera(
                     checks.loc[checks["passed"].eq(False), "check"]
                 ),
                 "max_shift": s["shift"].max(),
-                "max_edges_shifted": int(s["edges_shifted"].max()),
-                "samples_3plus_edges": int((s["edges_shifted"] >= 3).sum()),
-                **{f"edge_{e}_max": s[f"edge_{e}"].max() for e in vqq.EDGES},
-                **{
-                    f"edge_{e}_peak_med": s[f"edge_{e}_peak"].median()
-                    for e in vqq.EDGES
-                },
                 **asdict(qc.summary),
                 "error": "",
             }

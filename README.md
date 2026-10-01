@@ -73,8 +73,8 @@ sampled keyframes are decoded (a few seconds locally, about 30 s per camera
 over HTTPS). Metrics per keyframe: sharpness (Laplacian variance, 2×
 downsampled), noise, brightness and exposure statistics (from
 `aind-video-utils`), contrast, clipping at the tagged range, similarity to a
-reference frame, and shift from it and in each border strip (reported
-only). Needs the `video-qc` extra and `ffprobe` on `PATH`.
+reference frame, and shift from it (reported only). Needs the `video-qc`
+extra and `ffprobe` on `PATH`.
 
 ```python
 from aind_dynamic_foraging_behavior_video_analysis import video_quality_qc as vqq
@@ -94,11 +94,20 @@ vqr.session_card(qc, checks)      # one-page figure; vqr.batch_pdf for many
 vqq.check_session("<session>/behavior-videos")  # every camera, task window found itself
 ```
 
-Stability checks (sharpness, brightness, scene) compare each sample with
-the session's own median and need no calibration. Level checks (sharp
-enough, exposure, contrast) are skipped until thresholds are calibrated
-per camera. The recording often runs past the session (and starts before
-it), which fails the stability checks, so measure the task only. No NWB is
+Checks that can exclude a camera:
+
+- stability: sharpness, brightness and scene against the session's own
+  median (tolerances set on a 301-session survey);
+- `scene_moves`: something in view moves (fails a camera pointed away from
+  the mouse);
+- side camera clipping: at most 3.75% of pixels at the ceiling (the jaw,
+  mouth and paws saturate above it).
+
+Other level checks (sharpness, brightness, contrast levels) are skipped:
+across sessions they track the scene (background, rig) more than quality.
+A dirty bottom mirror is not detected by any check. The recording often
+runs past the session (and starts before it), which fails the stability
+checks, so measure the task only. No NWB is
 needed: `video_alignment.read_trial_times` reads the trial times from the raw
 session JSON (the same values as the NWB trials table). Design, evidence and
 limits: `VIDEO_QUALITY_QC_PLAN.md`; `examples/video_quality_qc_validation.ipynb`
