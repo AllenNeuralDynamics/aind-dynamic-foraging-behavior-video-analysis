@@ -1,6 +1,13 @@
 # Plan: `video_quality_qc` — image-quality QC of behavior videos
 
-> Status: revision 7 (2026-10-01). Phases 1–2 done. Surveys of 97, then all 301 curated FIP
+> **Status: revision 8 (2026-10-01). We are now following "Revision 8: simplification plan"
+> below.** It replaces the code structure in "Design" (dataclasses, summary fields, named level
+> checks, session helpers, batch PDF) and the task-window fallbacks; where it and older sections
+> disagree, revision 8 wins. The evidence and calibration in "Findings" and "Decisions:
+> calibration" still hold, and the check values do not change. Next: implement revision 8, then
+> Phase 3.
+>
+> Revision 7 (2026-10-01): Phases 1–2 done. Surveys of 97, then all 301 curated FIP
 > sessions set the stability tolerances (sharpness 0.45, similarity 0.7); revision 7 records the
 > calibration decisions ("Decisions: calibration"): a `scene_moves` check, a side camera
 > clipping cutoff of 3.75%, no other level cutoffs, border strips removed, dirty mirror a known
@@ -13,6 +20,141 @@
 > survey of whether cameras ever move. Written so a new
 > contributor or agent can pick it up without the conversation that produced it. The evidence
 > behind each choice is in "Measurements" and "Findings".
+
+## Revision 8: simplification plan (current)
+
+Agreed 2026-10-01 after review of the revision 7 code, which works but is too elaborate: three
+dataclasses (one with 52 hand-written summary fields), seven bespoke check functions of which three
+are always skipped, warning plumbing for task-window fallbacks, and session and batch helpers that
+duplicate code elsewhere. The goal is a module a new reader understands in one pass: plain
+functions passing a frame array and a samples table, and checks that are rows of data.
+
+### Principles
+
+- **No classes.** Data moves as a uint8 frame array and a pandas samples table.
+- **Measure everything, check little.** Every metric is computed and saved per sample. The checks
+  read only the columns they need and decide pass or fail.
+- **A check is data**: a metric, what it is taken over, a direction, a value. Its name is generated
+  from those (e.g. `similarity >= 0.7`), and its result row stores parameters, observed value and
+  outcome together.
+- **Timing lives with timing.** Placing the task on frames is alignment, not image quality.
+
+### Task window, in `video_alignment`
+
+```python
+task_frame_window(behavior_json, video_csv, trigger_log=None) -> (start, end)
+```
+
+Frames `[start, end)` from the first trial start to the last trial end (`read_trial_times`,
+`behavior_time_to_frame_index`, both already in `video_alignment`). The Harp time of each CSV row
+comes from the first source that works:
+
+1. the trigger log by frame number, `log[frame_number - first_frame_number]` (clipped to the log),
+   when a log is given;
+2. the corrected timing (`video_timing_qc.correct_video_timing`);
+3. the raw Harp column, when no frames were lost (`video_timing_qc` `no_frames_lost` passes).
+
+A running maximum is applied so a glitch cannot reorder it. Raises `ValueError` when no source
+works or the JSON has no Harp trial times; it has no other fallback. `video_timing_qc` imports from
+`video_alignment`, so import it inside the function to avoid a cycle.
+
+Why this order: in the 301-session survey the strict correction refused 65 of 602 cameras (56 for
+one Harp step off by more than half a frame, 9 for a trigger log one event off the frame-number
+span). The window only needs to be right to a few frames, so those cameras were placed correctly by
+the raw Harp column (44) or the trigger log by frame number (21). The trigger log by frame number is
+right whether or not frames were lost, so it goes first. Only one camera had no window
+(`808057_2025-09-03` side: video CSV with missing values).
+
+### Quality module, `video_quality_qc`
+
+Constants: `N_SAMPLES = 100`, `EDGE_FRACTION = 0.01`, `REFERENCE_SAMPLES = 10`,
+`FALLBACK_FRACTION = 0.5`, `HTTP_OPTIONS`, the two output file names, and the checks table:
+
+```python
+# (metric, over, op, value, cameras). Evidence: "Findings: full survey" and
+# "Decisions: calibration" (301 FIP sessions, 602 cameras).
+CHECKS = [
+    ("sharpness_dev",    "samples", "<=", 0.45,  "all"),   # was sharpness_stable
+    ("mean_dev",         "samples", "<=", 0.15,  "all"),   # was brightness_stable
+    ("similarity",       "samples", ">=", 0.7,   "all"),   # was scene_stable
+    ("similarity",       "p5",      "<",  0.998, "all"),   # was scene_moves
+    ("pct_clipped_high", "median",  "<=", 3.75,  "side"),  # was exposure_ok (side)
+]
+```
+
+`over="samples"` tests each sample and fails on two or more consecutive violations (an isolated one
+is counted but passes: a paw in front of the lens). `over` = `"median"` or `"p5"` tests one session
+statistic. `cameras` is `"all"` or a camera view (`"bottom"`, `"side"`, from the camera name in
+either folder layout: `bottom_camera` / `BottomCamera`).
+
+Functions, in pipeline order:
+
+1. `sample_window(behavior_json, video_csv, trigger_log) -> (window, note)`: calls
+   `task_frame_window`; if an input is missing or it raises, returns `None` and
+   `"middle 50%: <reason>"`; otherwise the window and `"task"`.
+2. `sample_keyframes(path, window) -> (frames, samples, color_range)`: refuse non-MP4; read the
+   frame index; choose up to `N_SAMPLES` keyframes evenly inside the window (never frame 0 or the
+   `EDGE_FRACTION` edges; with `window=None`, the middle `FALLBACK_FRACTION` of the file); seek each
+   in one open container, verify the decoded frame is the requested keyframe, read the coded luma
+   plane (never `to_ndarray(format="gray")`, see Findings 3); HTTP timeouts for URLs. `frames` is
+   `(n, h, w)` uint8; `samples` has `frame_index`, `video_time`.
+3. `measure(frames, samples, color_range) -> samples`: the reference is the pixel-wise median of
+   the first `REFERENCE_SAMPLES` frames. Adds, per sample: `mean`, `std`, `p1`, `p99`,
+   `dynamic_range`, `contrast_rms`, `entropy_bits`, `pct_clipped_low`, `pct_clipped_high` (at or
+   beyond the tagged floor / ceiling), `sharpness` (Laplacian variance, 2x downsampled), `noise_sigma`
+   (Immerkær), `similarity` (correlation with the reference, 2x downsampled), `shift_x`, `shift_y`,
+   `shift` (phase correlation, reported only), `sharpness_dev` and `mean_dev` (`|x / median - 1|`),
+   and `histogram` (luma counts). Intensity statistics are computed here, not imported from
+   `aind_video_utils.compute_frame_stats` (its extra columns were redundant or always zero on these
+   files). `aind-video-utils` is still used for `probe`, `read_mp4_frame_index`, `luma_range`.
+4. `run_checks(samples, camera) -> DataFrame`: one row per applicable check: `check` (generated
+   name), `metric`, `over`, `op`, `value`, `observed` (the statistic, or the number of samples in
+   runs), `passed` (bool), `samples` (offending sample numbers).
+5. `quality_action(checks) -> str`: `"use"`, or `"exclude: <check>"` for the first failure.
+6. `write_video_quality(samples, checks, out_dir, camera, note)`: `video_quality_<camera>.parquet`
+   (samples with histograms) and `video_quality_<camera>.json` (camera, window note, package and
+   `aind-video-utils` versions, checks, action).
+7. `video_quality(path, camera, behavior_json=None, video_csv=None, trigger_log=None) ->
+   (frames, samples, checks, note)`: chains 1 to 5, for the batch pipeline.
+
+### Reporter, `video_quality_report`
+
+One function, `session_card(frames, samples, checks, title)`: reference with clipped pixels marked
+(blue at or below the floor, red at or above the ceiling), 8 evenly spaced thumbnails on the tagged
+luma range, one time-course panel per `over="samples"` check with its threshold line and failed
+samples in red, a shift panel (reported only), the luma histogram (median and p5–p95 over samples),
+and the outlier frames (blurriest, darkest, brightest, least similar, most shifted, |last − first|).
+Thumbnails and the reference are computed from `frames` when drawing.
+
+### Removed or moved
+
+- Removed: `FrameQualityStats`, `VideoQualityQc`, `VideoQualityResult`, `qc_result_fieldnames`,
+  the `_med/_p5/_p95/_spread` summary fields (a summary is `samples.median()`), format fields
+  beyond what the code needs, `pts` and `edge_fraction` in outputs, the always-skipped level
+  checks and the "skipped" state, `RawHarpWindowWarning`, `task_window_or_whole_file`.
+- Moved to `scripts/video_quality_survey.py`: `check_session`, `contact_sheet`, `batch_pdf`.
+- Not reimplemented: session folder discovery. `kinematics.tongue_kinematics_utils` already has
+  `find_video_path` and `find_video_csv_path` (one camera, both folder layouts); the batch pipeline
+  (`tongue_analysis`) uses the CSV one. `find_session_videos` and `find_behavior_json` go away; the
+  survey script keeps its own S3 listing.
+
+### Size target
+
+About 250 lines of code (excluding docstrings, comments and blanks) in the module, from 614, and
+about 120 in the reporter, from 325.
+
+### Tests and docs
+
+Keep the synthetic MP4 / CSV / JSON / trigger-log fixtures in `tests/test_video_quality_qc.py`.
+Cover: each metric on arrays; keyframe choice (frame 0, edges, window, middle-50% default, fewer
+keyframes than requested) and seek correctness (lands on the keyframe, luma not range-converted,
+unsafe edit list and wrong landing refused); each check passing and failing on a synthetic fault
+(defocus, brightness step, occlusion, still scene, clipping on a side camera only) and the
+isolated-sample rule; a 6 px translation measured in `shift` and not checked; each task-window
+source and the `ValueError`; `sample_window`'s fallback notes; written files round-trip; the card
+renders. 100% coverage of both modules. Update the README section, the survey script and the
+example notebook (re-run it on `behavior_816212_2025-12-05_13-47-41`). Stored survey outputs keep
+the old field and check names; note that in the README.
 
 ## Summary
 
