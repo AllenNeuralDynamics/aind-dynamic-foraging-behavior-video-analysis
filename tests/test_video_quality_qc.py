@@ -412,6 +412,8 @@ class CheckTest(TempDirTest):
                 "mean_dev <= 0.15",
                 "similarity >= 0.7",
                 "similarity p5 < 0.998",
+                "mean median >= 50",
+                "mean median <= 150",
             ],
         )
         side = vqq.run_checks(samples, "SideCameraRight")
@@ -458,6 +460,17 @@ class CheckTest(TempDirTest):
         """Lights brighten by 40% from frame 200."""
         _, checks = self.run_video("bright", after(200, lambda y: y * 1.4))
         self.assertIn("mean_dev <= 0.15", check_names(checks, False))
+
+    def test_too_dark_or_too_bright(self):
+        """Median mean luma below 50 or above 150, whole session; the
+        stability checks see no change."""
+        _, dark = self.run_video("dark", lambda i, y: y * 0.3)
+        _, bright = self.run_video("bright_all", lambda i, y: y + 90)
+        self.assertEqual(check_names(dark, False), ["mean median >= 50"])
+        self.assertEqual(check_names(bright, False), ["mean median <= 150"])
+        self.assertLess(
+            dark.set_index("check").loc["mean median >= 50", "observed"], 50
+        )
 
     def test_occlusion(self):
         """Left half of the frame black from frame 200."""
@@ -642,7 +655,7 @@ class OutputTest(TempDirTest):
             samples["frame_index"].tolist(), list(range(40, 260, 10))
         )
         self.assertEqual(len(frames), len(samples))
-        self.assertEqual(len(checks), 5)
+        self.assertEqual(len(checks), 7)
         frames, samples, checks, note = self.bad
         self.assertTrue(note.startswith("middle 50%"))
         self.assertEqual(samples["frame_index"].iloc[0], 80)

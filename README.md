@@ -109,11 +109,13 @@ Checks (`CHECKS`; values set on a survey of 301 FIP sessions, 602 cameras):
 | `mean_dev <= 0.15` | two consecutive samples are more than 15% off the median brightness |
 | `similarity >= 0.7` | two consecutive samples correlate below 0.7 with the reference |
 | `similarity p5 < 0.998` | nothing in view moves (a camera pointed away from the mouse) |
+| `mean median >= 50`, `mean median <= 150` | the session's median brightness is too dark or too bright |
 | `pct_clipped_high median <= 3.75` | side cameras only: the jaw, mouth and paws saturate |
 
 One sample alone out of range is listed but passes (a paw in front of the
-lens). Level cutoffs on sharpness, brightness and contrast are not used:
-across sessions they track the scene (background, rig) more than quality.
+lens). The brightness limits are wide (survey medians 55–105, so none
+excluded); level cutoffs on sharpness and contrast are not used: across
+sessions they track the scene (background, rig) more than quality.
 A dirty bottom mirror is not detected by any check.
 
 The recording often runs past the session (and starts before it), which

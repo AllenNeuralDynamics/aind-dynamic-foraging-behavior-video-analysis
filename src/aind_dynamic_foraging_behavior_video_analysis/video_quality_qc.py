@@ -84,6 +84,10 @@ CHECKS = [
     ("mean_dev", "samples", "<=", 0.15, "all"),  # was brightness_stable
     ("similarity", "samples", ">=", 0.7, "all"),  # was scene_stable
     ("similarity", "p5", "<", 0.998, "all"),  # was scene_moves
+    # Too dark or too bright. Survey medians 54.7-102.4 (bottom), 71.4-104.8
+    # (side): no camera outside these limits (2026-10-01).
+    ("mean", "median", ">=", 50, "all"),
+    ("mean", "median", "<=", 150, "all"),
     ("pct_clipped_high", "median", "<=", 3.75, "side"),  # was exposure_ok
 ]
 OPS = {"<=": operator.le, ">=": operator.ge, "<": operator.lt}

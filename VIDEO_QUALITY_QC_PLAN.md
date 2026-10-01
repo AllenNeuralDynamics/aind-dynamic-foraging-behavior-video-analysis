@@ -204,6 +204,10 @@ Decisions the plan left open (simplest option taken):
   them come from `sample_keyframes` with a one-frame window.
 - **Outputs**: the JSON no longer repeats the video path or the sample frame indices (they are in
   the parquet), and the parquet is `video_quality_<camera>.parquet`.
+- **Brightness limits (added after review, 2026-10-01)**: `mean median >= 50` and `mean median
+  <= 150`, both cameras, two more rows in `CHECKS`. A sanity bound, not a calibrated cutoff: the
+  survey's median mean luma is 54.7–102.4 (bottom) and 71.4–104.8 (side), so no surveyed camera
+  is excluded. This supersedes "No other level cutoffs" for brightness only.
 - **Lint**: flake8 is clean on every touched file. That meant reflowing old over-long docstring
   lines in `video_alignment.py` and removing black-style `a[x : y]` slices (E203) in the survey
   script and the test fixture.
