@@ -6,8 +6,9 @@ video CSV and the camera trigger log to a temporary folder (the CSV reader
 needs local files), find the task window from the session JSON, measure
 the MP4 over HTTPS, and write, per camera, into ``<out>/<session>/``:
 
-- ``video_quality_<camera>.json`` and ``..._samples.parquet``
-  (``write_video_quality``);
+- ``video_quality_<camera>.json`` and ``.parquet`` (``write_video_quality``;
+  runs before revision 8 wrote ``..._samples.parquet`` with older field and
+  check names);
 - ``session_card_<camera>.png``;
 - ``thumbnails_<camera>.npz``: 8 evenly spaced frames, for contact sheets.
 
@@ -47,7 +48,6 @@ from concurrent.futures import (
     ThreadPoolExecutor,
     as_completed,
 )
-from dataclasses import asdict
 from pathlib import Path
 
 import matplotlib
@@ -71,6 +71,7 @@ BUCKET = "https://aind-open-data.s3.us-west-2.amazonaws.com"
 # of hanging a worker; the camera then records an error and can be re-run.
 socket.setdefaulttimeout(120)
 N_THUMBNAILS = 8
+CONTACT_ROWS = 10
 
 
 def list_keys(prefix):
@@ -98,7 +99,7 @@ def session_files(session):
     keys = set(list_keys(f"{session}/"))
     cameras = []
     for key in sorted(keys):
-        rel = key[len(session) + 1 :]
+        rel = key.removeprefix(f"{session}/")
         new = re.fullmatch(r"behavior-videos/([^/]+)/video\.mp4", rel)
         old = re.fullmatch(r"behavior-videos/([^/]+)\.mp4", rel)
         if new:
@@ -127,7 +128,7 @@ def download(key, folder):
     return path
 
 
-def run_session(session, out_dir, n_samples):
+def run_session(session, out_dir):
     """Measure every camera of one session; return one row per camera."""
     rows = []
     session_out = Path(out_dir) / session
@@ -152,25 +153,11 @@ def run_session(session, out_dir, n_samples):
                     trigger_log,
                     tmp,
                     session_out,
-                    n_samples,
                 )
             )
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     return rows
-
-
-def _task_window(behavior_json, csv_key, trigger_log, tmp):
-    """(frame_window, note), falling back to the whole file."""
-    if behavior_json is None or csv_key is None:
-        return vqq.task_window_or_whole_file(behavior_json, None)
-    csv = download(csv_key, tmp)
-    try:
-        return vqq.task_window_or_whole_file(
-            f"{BUCKET}/{urllib.parse.quote(behavior_json)}", csv, trigger_log
-        )
-    finally:
-        csv.unlink()
 
 
 def run_camera(
@@ -182,39 +169,49 @@ def run_camera(
     trigger_log,
     tmp,
     session_out,
-    n_samples,
 ):
     """Measure, check and write one camera; return its summary row."""
     row = {"session": session, "camera": camera, "mp4": mp4_key}
     start = time.perf_counter()
+    csv = None
+    behavior_url = (
+        f"{BUCKET}/{urllib.parse.quote(behavior_json)}"
+        if behavior_json
+        else None
+    )
     try:
-        window, note = _task_window(behavior_json, csv_key, trigger_log, tmp)
-        row["window"] = note
-        qc = vqq.measure_video_quality(
+        csv = download(csv_key, tmp) if csv_key else None
+        frames, samples, checks, note = vqq.video_quality(
             f"{BUCKET}/{urllib.parse.quote(mp4_key)}",
-            n_samples=n_samples,
-            frame_window=window,
+            camera,
+            behavior_url,
+            csv,
+            trigger_log,
         )
-        checks = vqq.check_video_quality(qc, camera=camera)
-        vqq.write_video_quality(qc, checks, session_out, camera=camera)
-        fig = vqr.session_card(qc, checks, f"{session}  {camera}")
+        row["window"] = note
+        vqq.write_video_quality(samples, checks, session_out, camera, note)
+        title = f"{session}  {camera}  ({note})"
+        fig = vqr.session_card(frames, samples, checks, title)
         fig.savefig(session_out / f"session_card_{camera}.png", dpi=90)
         plt.close(fig)
-        picks = vqr._even_picks(len(qc.samples), N_THUMBNAILS)
+        picks = np.linspace(0, len(frames) - 1, N_THUMBNAILS).round()
+        picks = np.unique(picks).astype(int)
         np.savez_compressed(
             session_out / f"thumbnails_{camera}.npz",
-            thumbnails=qc.thumbnails[picks][:, ::2, ::2],
-            video_time=qc.samples["video_time"].to_numpy()[picks],
+            thumbnails=frames[picks][:, ::4, ::4],
+            video_time=samples["video_time"].to_numpy()[picks],
         )
-        s = qc.samples
+        medians = samples.median(numeric_only=True).add_suffix("_med")
         row.update(
             {
                 "action": vqq.quality_action(checks),
                 "failed_checks": ";".join(
-                    checks.loc[checks["passed"].eq(False), "check"]
+                    checks.loc[~checks["passed"], "check"]
                 ),
-                "max_shift": s["shift"].max(),
-                **asdict(qc.summary),
+                "n_samples": len(samples),
+                "max_shift": samples["shift"].max(),
+                "similarity_p5": samples["similarity"].quantile(0.05),
+                **medians.to_dict(),
                 "error": "",
             }
         )
@@ -225,11 +222,14 @@ def run_camera(
                 "error": f"{e!r}\n{traceback.format_exc(limit=3)}",
             }
         )
+    finally:
+        if csv is not None:
+            csv.unlink()
     row["seconds"] = round(time.perf_counter() - start, 1)
     return row
 
 
-def survey(sessions, out_dir, workers, n_samples):
+def survey(sessions, out_dir, workers):
     """Run every session not already in ``summary.csv``."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -241,9 +241,7 @@ def survey(sessions, out_dir, workers, n_samples):
     print(f"{len(sessions)} sessions, {len(done)} done, {len(todo)} to run")
     start = time.perf_counter()
     with ProcessPoolExecutor(max_workers=workers) as pool:
-        futures = {
-            pool.submit(run_session, s, out_dir, n_samples): s for s in todo
-        }
+        futures = {pool.submit(run_session, s, out_dir): s for s in todo}
         for i, future in enumerate(as_completed(futures), 1):
             rows = future.result()
             with summary.open("a") as f:
@@ -307,7 +305,7 @@ def report(out_dir, sort_by="sharpness_med"):
             fig = plt.figure(figsize=vqr.PAGE_SIZE)
             ax = fig.add_axes([0.01, 0.01, 0.98, 0.95])
             ax.axis("off")
-            part = table.iloc[start : start + 45][cols].copy()
+            part = table[cols].iloc[start:][:45].copy()
             part["window"] = part["window"].fillna("").str.slice(0, 40)
             part[sort_by] = part[sort_by].map(
                 lambda v: "" if pd.isna(v) else f"{v:.3g}"
@@ -323,7 +321,7 @@ def report(out_dir, sort_by="sharpness_med"):
             pdf.savefig(fig)
             plt.close(fig)
         rows = table.to_dict("records")
-        per_page = vqr.CONTACT_ROWS
+        per_page = CONTACT_ROWS
         for start in range(0, len(rows), per_page):
             fig = plt.figure(figsize=vqr.PAGE_SIZE)
             grid = fig.add_gridspec(
@@ -337,7 +335,7 @@ def report(out_dir, sort_by="sharpness_med"):
                 wspace=0.03,
                 hspace=0.25,
             )
-            for i, r in enumerate(rows[start : start + per_page]):
+            for i, r in enumerate(rows[start:][:per_page]):
                 npz = out_dir / r["session"] / f"thumbnails_{r['camera']}.npz"
                 _thumb_row(
                     fig,
@@ -377,11 +375,6 @@ THRESHOLD_METRICS = [
 THRESHOLD_PERCENTILES = [0, 1, 3, 5, 10, 25, 50, 75, 90, 95, 99, 100]
 
 
-def _view(camera):
-    """``bottom`` or ``side`` for either folder layout's camera name."""
-    return "bottom" if camera.lower().startswith("bottom") else "side"
-
-
 def _session_table(out_dir):
     """One row per measured camera with session medians of every
     threshold metric and the per-sample table kept for frame choice."""
@@ -390,13 +383,15 @@ def _session_table(out_dir):
     for r in rows:
         if r["action"] in ("error", "no mp4"):
             continue
-        p = (
-            out_dir
-            / r["session"]
-            / f"video_quality_{r['camera']}_samples.parquet"
+        # Before revision 8: video_quality_<camera>_samples.parquet.
+        found = sorted(
+            (out_dir / r["session"]).glob(
+                f"video_quality_{r['camera']}*.parquet"
+            )
         )
-        if not p.exists():
+        if not found:
             continue
+        p = found[0]
         samples = pd.read_parquet(
             p, columns=["frame_index"] + [m for m, _ in THRESHOLD_METRICS]
         )
@@ -404,7 +399,7 @@ def _session_table(out_dir):
             {
                 "session": r["session"],
                 "camera": r["camera"],
-                "view": _view(r["camera"]),
+                "view": vqq.camera_view(r["camera"]),
                 "mp4": r["mp4"],
                 "samples": samples,
                 **{m: samples[m].median() for m, _ in THRESHOLD_METRICS},
@@ -419,8 +414,8 @@ def _fetch_frame(mp4_key, frame_index, cache):
     if path.exists():
         return np.load(path)
     url = f"{BUCKET}/{urllib.parse.quote(mp4_key)}"
-    index = vqq.read_mp4_frame_index(url)
-    luma = vqq.read_keyframes(url, index, [frame_index])[0][1]
+    window = (frame_index, frame_index + 1)
+    luma = vqq.sample_keyframes(url, window)[0][0]
     np.save(path, luma)
     return luma
 
@@ -543,7 +538,6 @@ def main():
     parser.add_argument("out", help="output folder")
     parser.add_argument("--filter-column", default=None)
     parser.add_argument("--workers", type=int, default=8)
-    parser.add_argument("--samples", type=int, default=100)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--report", action="store_true")
     parser.add_argument("--thresholds", action="store_true")
@@ -558,7 +552,7 @@ def main():
     if args.filter_column:
         table = table[table[args.filter_column].astype(str).eq("True")]
     sessions = list(dict.fromkeys(table["raw_session"]))[: args.limit]
-    survey(sessions, args.out, args.workers, args.samples)
+    survey(sessions, args.out, args.workers)
     print(json.dumps({"summary": str(Path(args.out) / "summary.csv")}))
 
 

@@ -4,8 +4,8 @@
 > below.** It replaces the code structure in "Design" (dataclasses, summary fields, named level
 > checks, session helpers, batch PDF) and the task-window fallbacks; where it and older sections
 > disagree, revision 8 wins. The evidence and calibration in "Findings" and "Decisions:
-> calibration" still hold, and the check values do not change. Next: implement revision 8, then
-> Phase 3.
+> calibration" still hold, and the check values do not change. Revision 8 is implemented (see
+> "Revision 8: implemented"). Next: Phase 3.
 >
 > Revision 7 (2026-10-01): Phases 1–2 done. Surveys of 97, then all 301 curated FIP
 > sessions set the stability tolerances (sharpness 0.45, similarity 0.7); revision 7 records the
@@ -155,6 +155,58 @@ source and the `ValueError`; `sample_window`'s fallback notes; written files rou
 renders. 100% coverage of both modules. Update the README section, the survey script and the
 example notebook (re-run it on `behavior_816212_2025-12-05_13-47-41`). Stored survey outputs keep
 the old field and check names; note that in the README.
+
+### Revision 8: implemented (2026-10-01)
+
+Branch `refactor/video-quality-qc`. Lines of code (excluding docstrings, comments and blanks; by
+this count the old module is 659, not the 614 above):
+
+| File | Before | After |
+|---|---|---|
+| `video_quality_qc.py` | 659 | 255 |
+| `video_quality_report.py` | 336 | 141 |
+| `video_alignment.py` | 97 | 119 (`task_frame_window`) |
+| `tests/test_video_quality_qc.py` | 564 | 483 |
+
+The reporter is over the 120 target: most of it is matplotlib layout (black splits each gridspec
+call over 8–10 lines), and squeezing further would cost readability.
+
+**Verified on real data.** `behavior_800886_2025-08-18_13-14-52`, both cameras, over HTTPS with
+the stored window (302,396–2,552,853): the same 100 frame indices; every shared metric identical
+per sample (shift to 2e-16, float rounding), and identical histograms; action `use` on both, as
+stored. `task_frame_window` gives the stored window both with the trigger log and without it
+(corrected timing).
+
+Decisions the plan left open (simplest option taken):
+
+- **Trigger log**: when given, it is the only source tried. An unreadable log raises (no fall
+  through to the correction), and `sample_window` then samples the middle 50% with the reason.
+  The correction is called without trigger times, since it is only reached without a log.
+- **`sample_window`** catches `ValueError` and `OSError` (missing CSV file, network errors).
+  Missing inputs give one note, `"middle 50%: no behavior JSON or video CSV"`.
+- **Whole file**: no flag; pass a window past the end, e.g. `(0, 10**9)`.
+- **Display range on the card**: `session_card` has no colour-range argument, so `measure` adds a
+  constant `color_range` column to the samples.
+- **Reference frame**: a small public `reference_frame(frames)` shared by `measure` and the card.
+  It keeps the old truncation to uint8, so similarity and shift match stored values.
+- **8-bit only**: luma is read from 8-bit planar formats, so `luma_range(8, ...)` and 256-bin
+  histograms. Intensity statistics are the plan's list only (p5, p50, p95, `pct_at_min/max`,
+  `pct_below_floor/above_ceiling`, `pct_outside_tagged` dropped).
+- **Check names**: `"<metric> <op> <value>"` for `over="samples"`, `"<metric> <over> <op>
+  <value>"` otherwise (`similarity p5 < 0.998`, `pct_clipped_high median <= 3.75`). `samples`
+  lists every failing sample, isolated ones too; `observed` counts those in runs.
+- **Card time course**: the checked metric itself (`sharpness_dev`, `mean_dev`, `similarity`)
+  with its threshold dashed, not % of median.
+- **`check_session`, `contact_sheet`, `batch_pdf`**: deleted, not moved. The survey script never
+  used them; it builds its index and contact sheets from saved thumbnails and cards. Script
+  changes: `--samples` removed (`N_SAMPLES` is a constant); summary rows carry `<metric>_med`
+  medians, `similarity_p5` and `n_samples`; threshold pages read either parquet name; frames for
+  them come from `sample_keyframes` with a one-frame window.
+- **Outputs**: the JSON no longer repeats the video path or the sample frame indices (they are in
+  the parquet), and the parquet is `video_quality_<camera>.parquet`.
+- **Lint**: flake8 is clean on every touched file. That meant reflowing old over-long docstring
+  lines in `video_alignment.py` and removing black-style `a[x : y]` slices (E203) in the survey
+  script and the test fixture.
 
 ## Summary
 

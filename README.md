@@ -69,49 +69,69 @@ shows it on real sessions against the trigger log.
 
 `video_quality_qc` measures image quality on about 100 keyframes spread
 across a behavior-video MP4 and says whether to use the video. Only the
-sampled keyframes are decoded (a few seconds locally, about 30 s per camera
-over HTTPS). Metrics per keyframe: sharpness (Laplacian variance, 2×
-downsampled), noise, brightness and exposure statistics (from
-`aind-video-utils`), contrast, clipping at the tagged range, similarity to a
-reference frame, and shift from it (reported only). Needs the `video-qc`
-extra and `ffprobe` on `PATH`.
+sampled keyframes are decoded (a few seconds locally, about 30-45 s per
+camera over HTTPS). Every metric is saved per keyframe: brightness and
+exposure statistics, contrast, entropy, clipping at the tagged range,
+sharpness (Laplacian variance, 2× downsampled), noise, similarity to a
+reference frame, and shift from it (reported only). Plain functions: frames
+are a uint8 array, samples a pandas table, and checks are rows of the
+`CHECKS` table. Needs the `video-qc` extra and `ffprobe` on `PATH`.
 
 ```python
 from aind_dynamic_foraging_behavior_video_analysis import video_quality_qc as vqq
 from aind_dynamic_foraging_behavior_video_analysis import video_quality_report as vqr
 
-# Task frames (first trial start to last trial end) from the raw asset:
-# trial times from the session JSON, put on frames by the corrected timing.
-window = vqq.task_frame_window("behavior/<subject>_<datetime>.json",
-                               "behavior-videos/BottomCamera/metadata.csv",
-                               trigger_log="behavior/raw.harp/BehaviorEvents/Event_94.bin")
-qc = vqq.measure_video_quality("behavior-videos/BottomCamera/video.mp4",
-                               frame_window=window)
-checks = vqq.check_video_quality(qc, camera="BottomCamera")
-vqq.quality_action(checks)        # "use" or "exclude: <check>"
-vqq.write_video_quality(qc, checks, "results/", camera="BottomCamera")
-vqr.session_card(qc, checks)      # one-page figure; vqr.batch_pdf for many
-vqq.check_session("<session>/behavior-videos")  # every camera, task window found itself
+# All in one: the task window (first trial start to last trial end, from the
+# session JSON and the camera's CSV; the middle 50% of the file if that
+# fails), keyframes, metrics, checks.
+frames, samples, checks, note = vqq.video_quality(
+    "behavior-videos/bottom_camera.mp4", "bottom_camera",
+    behavior_json="behavior/<subject>_<datetime>.json",
+    video_csv="behavior-videos/bottom_camera.csv",
+    trigger_log="behavior/raw.harp/BehaviorEvents/Event_94.bin",
+)
+vqq.quality_action(checks)   # "use" or "exclude: <check>"
+vqq.write_video_quality(samples, checks, "results/", "bottom_camera", note)
+vqr.session_card(frames, samples, checks, "<session>  bottom_camera")
+
+# Or step by step:
+window, note = vqq.sample_window(behavior_json, video_csv, trigger_log)
+frames, samples, color_range = vqq.sample_keyframes(mp4, window)
+samples = vqq.measure(frames, samples, color_range)
+checks = vqq.run_checks(samples, camera)
 ```
 
-Checks that can exclude a camera:
+Checks (`CHECKS`; values set on a survey of 301 FIP sessions, 602 cameras):
 
-- stability: sharpness, brightness and scene against the session's own
-  median (tolerances set on a 301-session survey);
-- `scene_moves`: something in view moves (fails a camera pointed away from
-  the mouse);
-- side camera clipping: at most 3.75% of pixels at the ceiling (the jaw,
-  mouth and paws saturate above it).
+| Check | Fails when |
+|---|---|
+| `sharpness_dev <= 0.45` | two consecutive samples are more than 45% off the median sharpness |
+| `mean_dev <= 0.15` | two consecutive samples are more than 15% off the median brightness |
+| `similarity >= 0.7` | two consecutive samples correlate below 0.7 with the reference |
+| `similarity p5 < 0.998` | nothing in view moves (a camera pointed away from the mouse) |
+| `pct_clipped_high median <= 3.75` | side cameras only: the jaw, mouth and paws saturate |
 
-Other level checks (sharpness, brightness, contrast levels) are skipped:
+One sample alone out of range is listed but passes (a paw in front of the
+lens). Level cutoffs on sharpness, brightness and contrast are not used:
 across sessions they track the scene (background, rig) more than quality.
-A dirty bottom mirror is not detected by any check. The recording often
-runs past the session (and starts before it), which fails the stability
-checks, so measure the task only. No NWB is
-needed: `video_alignment.read_trial_times` reads the trial times from the raw
-session JSON (the same values as the NWB trials table). Design, evidence and
-limits: `VIDEO_QUALITY_QC_PLAN.md`; `examples/video_quality_qc_validation.ipynb`
-runs it on a public session.
+A dirty bottom mirror is not detected by any check.
+
+The recording often runs past the session (and starts before it), which
+fails the stability checks, so the task is sampled.
+`video_alignment.task_frame_window` places it: trial times from the raw
+session JSON (the same values as the NWB trials table, so no NWB is
+needed), and Harp time per frame from the trigger log by frame number, else
+the corrected timing, else the raw Harp column when no frames were lost.
+
+Outputs per camera: `video_quality_<camera>.parquet` (every metric per
+keyframe, with histograms) and `video_quality_<camera>.json` (window note,
+versions, checks, action). Survey outputs written before revision 8
+(`video_quality_qc_data/survey_fip/`) use the older names:
+`..._samples.parquet`, summary fields (`sharpness_med`, ...) and check names
+(`sharpness_stable`, `brightness_stable`, `scene_stable`, and level checks
+recorded as skipped; `scene_moves` and the clipping cutoff came later). Design, evidence and limits: `VIDEO_QUALITY_QC_PLAN.md`;
+`examples/video_quality_qc_validation.ipynb` runs it on a public session;
+`scripts/video_quality_survey.py` runs it on many.
 
 
 ## Changes
@@ -119,8 +139,9 @@ runs it on a public session.
 ### Unreleased
 
 - **New:** `video_alignment.read_trial_times` (trial start, go cue and end
-  from the raw session JSON, as in the NWB) and
-  `video_alignment.behavior_time_to_frame_index`.
+  from the raw session JSON, as in the NWB),
+  `video_alignment.behavior_time_to_frame_index` and
+  `video_alignment.task_frame_window`.
 - **New:** `video_quality_qc` and `video_quality_report` (see above), in a
   new `video-qc` extra (`aind-video-utils==0.7.0`, `av`, `matplotlib`,
   `pyarrow`). Nothing existing changes.
