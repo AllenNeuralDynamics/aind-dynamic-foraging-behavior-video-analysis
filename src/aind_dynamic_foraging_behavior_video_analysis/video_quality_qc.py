@@ -40,6 +40,9 @@ Checks, one question each (:func:`check_video_quality` runs them all):
   the session median throughout?
 - ``scene_stable``: does every sample correlate with the reference by at
   least ``MIN_SIMILARITY``?
+- ``scene_moves``: does anything move? A camera on a live mouse never
+  matches its reference as closely as ``MAX_STILL_SIMILARITY`` on 95% of
+  samples; a camera pointed away from the mouse does.
 - ``sharp_enough``, ``exposure_ok``, ``contrast_ok``: are the session
   medians within the level thresholds for this camera? Skipped when no
   threshold exists (see ``LEVEL_THRESHOLDS``).
@@ -114,6 +117,11 @@ SHARPNESS_TOLERANCE = 0.45
 BRIGHTNESS_TOLERANCE = 0.15
 MIN_SIMILARITY = 0.7
 
+# Similarity p5 at or above this means nothing in view moves. Survey of 602
+# cameras: the one camera not viewing the mouse (816212_2025-12-23 bottom)
+# 0.9996; every camera on a mouse at most 0.991 (bottom) or 0.947 (side).
+MAX_STILL_SIMILARITY = 0.998
+
 # Level thresholds per camera: min_sharpness, min_mean, max_mean,
 # max_pct_clipped (median % of pixels at or above the tagged ceiling),
 # min_dynamic_range. Empty until calibrated on the
@@ -140,6 +148,7 @@ STABILITY_CHECKS = [
     "sharpness_stable",
     "brightness_stable",
     "scene_stable",
+    "scene_moves",
 ]
 LEVEL_CHECKS = ["sharp_enough", "exposure_ok", "contrast_ok"]
 
@@ -809,6 +818,22 @@ def check_brightness_stable(mean, tolerance=BRIGHTNESS_TOLERANCE) -> dict:
     )
 
 
+def check_scene_moves(similarity, max_similarity=MAX_STILL_SIMILARITY) -> dict:
+    """Does anything move? Fails if the 5th percentile of similarity to the
+    reference reaches ``max_similarity``: a scene this still has no mouse
+    in it (e.g. a camera knocked away from the animal)."""
+    p5 = float(np.percentile(np.asarray(similarity, dtype=np.float64), 5))
+    if p5 >= max_similarity:
+        return _result(
+            "scene_moves",
+            False,
+            f"scene is still: similarity p5 {p5:.4f} >= {max_similarity:g}",
+        )
+    return _result(
+        "scene_moves", True, f"similarity p5 {p5:.4f} < {max_similarity:g}"
+    )
+
+
 def check_scene_stable(similarity, min_similarity=MIN_SIMILARITY) -> dict:
     """Does every sample correlate with the reference by ``min_similarity``?"""
     off = np.asarray(similarity, dtype=np.float64) < min_similarity
@@ -905,6 +930,7 @@ def check_video_quality(
         check_sharpness_stable(s["sharpness"]),
         check_brightness_stable(s["mean"]),
         check_scene_stable(s["similarity"]),
+        check_scene_moves(s["similarity"]),
         check_sharp_enough(qc.summary, thresholds, camera),
         check_exposure_ok(qc.summary, thresholds, camera),
         check_contrast_ok(qc.summary, thresholds, camera),

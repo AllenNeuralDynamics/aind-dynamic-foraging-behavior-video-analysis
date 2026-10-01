@@ -420,6 +420,20 @@ class MeasureTest(TempDirTest):
         checks, _ = self.action(qc)
         self.assertFalse(checks.loc["scene_stable", "passed"])
 
+    def test_still_scene_fails_scene_moves(self):
+        """Every frame the same (nothing moves): only scene_moves fails."""
+        still = _frame(0, _texture()).astype(float)
+        qc = self.measure("still", lambda i, y: still)
+        checks, action = self.action(qc)
+        self.assertEqual(action, "exclude: scene_moves")
+        self.assertIn("still", checks.loc["scene_moves", "message"])
+        self.assertTrue(
+            checks.loc[
+                ["sharpness_stable", "brightness_stable", "scene_stable"],
+                "passed",
+            ].all()
+        )
+
     def test_translation_is_measured_not_checked(self):
         """A 6 px shift is reported in ``shift``; no check fails on it."""
         qc = self.measure(
@@ -463,7 +477,10 @@ class MeasureTest(TempDirTest):
         self.assertFalse(checks.loc["exposure_ok", "passed"])
         self.assertIn("clipped", checks.loc["exposure_ok", "message"])
         self.assertTrue(checks.loc["contrast_ok", "passed"])
-        self.assertEqual(action, "exclude: sharp_enough")
+        # The action names the first failed check (this tiny, mostly
+        # unchanging synthetic frame also reads as still: scene_moves).
+        first = checks.index[checks["passed"].eq(False)][0]
+        self.assertEqual(action, f"exclude: {first}")
 
     def test_exposure_limits(self):
         """Too dark, too bright, and within limits."""
@@ -553,7 +570,7 @@ class OutputTest(TempDirTest):
         )
         # Nothing reaches the floor, so that spread is undefined.
         self.assertIsNone(record["summary"]["pct_clipped_low_spread"])
-        self.assertEqual(len(record["checks"]), 6)
+        self.assertEqual(len(record["checks"]), 7)
         samples = pd.read_parquet(parquet_path)
         self.assertEqual(len(samples), len(self.qc.samples))
         self.assertEqual(len(samples["histogram"].iloc[0]), 256)
