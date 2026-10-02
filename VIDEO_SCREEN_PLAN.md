@@ -1,7 +1,7 @@
 # Plan: video screening before analysis (Phase 3 of video timing + quality QC)
 
 > **Status (2026-10-02): Part A merged (PR #9). Part B in progress on `feat/video-screen`:
-> steps 1 (symmetric timing module) and 2 (quality renames) done.** Decisions so far are dated in place. Background:
+> steps 1 (symmetric timing module), 2 (quality renames) and 3 (`video_screen`) done.** Decisions so far are dated in place. Background:
 > `VIDEO_QUALITY_QC_PLAN.md` (revisions 1–8) and `VIDEO_TIMING_QC_PLAN.md`.
 
 ## Context
@@ -222,6 +222,45 @@ for session in screen.query("view == 'bottom' and use").session: ...
 # or as a gate inside an existing loop, nothing written
 row = vs.screen_camera(session, camera, mp4, video_csv, behavior_json, trigger_log)
 ```
+
+## Decisions during implementation (2026-10-02)
+
+Where the design above left a choice open, the simplest option was taken:
+
+- **Verdict order (timing).** `timing_verdict` keeps the old decision order, then the new rows:
+  `ALWAYS_REQUIRED`; `REQUIRED_TO_REINDEX` when frames were lost; then `trigger_log_count`,
+  `trigger_log_matches_csv`, `harp_matches_camera`, `video_frame_count` when they ran. Lost
+  frames, glitches, and out-of-order frame numbers with no frames lost (corrupted metadata) still
+  do not exclude, as before. When several checks fail, the reason reported can differ from the
+  old error message (old: a trigger log mismatch was raised before the input checks); the
+  outcome (use or not) is the same.
+- **Re-index trial row.** `harp_matches_camera` is always in the table; skipped (`passed` None)
+  with a reason when no frames were lost, when re-indexing is not allowed, or when the trigger
+  log does not fit the CSV. The input checks run on the CSV's Harp column (the log, when it
+  passes `trigger_log_matches_csv`, is equal within one tick).
+- **Method names.** The internal method is `_correction_method(checks)`: `as written`,
+  `fix glitches`, `re-index`, or None when excluded. `video_screen` reads it for
+  `timing_method` (same package).
+- **`check_session`** reports `exclude: unreadable` where it said `refuse: unreadable`.
+- **Quality record.** The `video_quality_<camera>.json` field `action` is now `verdict`, and the
+  session card says `VERDICT:`, matching timing. The notebook's stored outputs still say
+  `action` (not re-run).
+- **Quality runs when timing excludes**, so both verdicts are always recorded (`reason` names
+  timing first).
+- **`quality=False`**: `quality`, `window` and the medians are empty; `use` follows timing. A
+  later run with `quality=True` screens those cameras again.
+- **Cache key.** A camera is skipped when its last row in `video_screen.jsonl` has the same
+  `versions` string (this package and `aind-video-utils`), no error, and quality measured if
+  asked for. `cards` does not count.
+- **Work unit.** `screen_sessions` groups input rows by session: one worker task per session,
+  so files given as URLs (the trigger log) download once per session, and the session's rows
+  are appended to `video_screen.jsonl` together. `video_screen.csv` holds the last row per
+  session × camera of everything in the log, not only the current inputs.
+- **Errors.** `reason` is `error: <type>: <message> (<file>:<line>)`; the timing and quality
+  columns stay empty.
+- **Frame count** comes from the MP4 index (`read_mp4_frame_index(mp4).n_samples`), read once
+  for timing and again by quality sampling.
+- **Trigger log column** is a boolean: True when a log was given and readable.
 
 ## Steps (commits)
 
