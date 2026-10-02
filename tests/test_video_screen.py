@@ -262,7 +262,7 @@ class ScreenCameraTest(ScreenTest):
 
 
 class ScreenSessionsTest(ScreenTest):
-    """Many cameras, the files, the cache and the overrides."""
+    """Many cameras, the files and the cache."""
 
     @classmethod
     def setUpClass(cls):
@@ -342,66 +342,14 @@ class ScreenSessionsTest(ScreenTest):
         lines = (out / vs.SCREEN_LOG).read_text().splitlines()
         self.assertEqual(len(lines), 3 + 1 + 3 + 1)
 
-    def test_load_screen_overrides(self):
-        """An override sets use and records why."""
-        out = self.tmp / "overridden"
+    def test_load_screen(self):
+        """Types survive the CSV: subject as text, empty reason as ""."""
+        out = self.tmp / "loaded"
         vs.screen_sessions(self.inputs, out_dir=out, quality=False)
-        path = out / vs.SCREEN_FILE
-        screen = vs.load_screen(path)
+        screen = vs.load_screen(out / vs.SCREEN_FILE)
         self.assertEqual(screen["use"].tolist(), [True, True])
         self.assertEqual(screen["reason"].tolist(), ["", ""])
         self.assertEqual(screen["subject"].tolist(), ["123456", "654321"])
-        self.assertTrue(screen["override_note"].isna().all())
-        pd.DataFrame(
-            [
-                {
-                    "session": self.inputs[1]["session"],
-                    "camera": "bottom_camera",
-                    "verdict": "exclude: mouse out of view",
-                    "note": "checked by eye",
-                    "reviewer": "mb",
-                    "date": "2026-10-02",
-                }
-            ]
-        ).to_csv(out / vs.OVERRIDES_FILE, index=False)
-        screen = vs.load_screen(path)
-        self.assertEqual(screen["use"].tolist(), [True, False])
-        self.assertEqual(
-            screen["override_note"].iloc[1],
-            "exclude: mouse out of view (mb, 2026-10-02): checked by eye",
-        )
-
-    def test_overrides_never_undo_timing(self):
-        """Overriding to use brings back a quality exclusion, but not a
-        timing exclusion or an error."""
-        folder = self.tmp / "hand"
-        folder.mkdir()
-        pd.DataFrame(
-            {
-                "session": ["a", "b", "c"],
-                "camera": ["side_camera"] * 3,
-                "use": [False] * 3,
-                "reason": [
-                    "quality: exclude: pct_clipped_high median <= 3.75",
-                    "timing: exclude: harp_evenly_spaced",
-                    "error: URLError: timed out",
-                ],
-                "timing": ["use", "exclude: harp_evenly_spaced", None],
-            }
-        ).to_csv(folder / vs.SCREEN_FILE, index=False)
-        pd.DataFrame(
-            {
-                "session": ["a", "b", "c"],
-                "camera": ["side_camera"] * 3,
-                "verdict": ["use"] * 3,
-                "note": ["clipping only on the paws"] * 3,
-                "reviewer": ["mb"] * 3,
-                "date": ["2026-10-02"] * 3,
-            }
-        ).to_csv(folder / vs.OVERRIDES_FILE, index=False)
-        screen = vs.load_screen(folder / vs.SCREEN_FILE)
-        self.assertEqual(screen["use"].tolist(), [True, False, False])
-        self.assertTrue(screen["override_note"].notna().all())
 
     def test_url_download_cached_per_session(self):
         """Two cameras of a session share one download of the log."""

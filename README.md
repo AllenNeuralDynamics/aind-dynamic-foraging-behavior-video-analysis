@@ -186,16 +186,15 @@ session finishes (an interrupted run resumes), rebuilds `video_screen.csv`,
 writes `video_timing_<camera>.json` and the quality files (and the session
 card with `cards=True`) under `<out_dir>/<session>/`, and skips cameras
 already screened by the same library versions. `quality=False` screens
-timing only. `load_screen` applies `screen_overrides.csv` beside the table
-(`session, camera, verdict, note, reviewer, date`), so the quality decision
-for a camera can be changed by hand with the reason recorded. Columns and decisions:
+timing only. Columns and decisions:
 `VIDEO_SCREEN_PLAN.md`. `scripts/video_quality_survey.py` builds the inputs
 from the public S3 bucket and screens many sessions.
 
 ### Using the screen
 
-Always read the table with `load_screen`, which applies the overrides, and
-decide with the `use` column, never by parsing `reason`.
+Read the table with `load_screen` (it keeps `subject` as text and empty
+`reason`s as `""`) and decide with the `use` column, never by parsing
+`reason`.
 
 ```python
 screen = vs.load_screen("screen/video_screen.csv")
@@ -223,22 +222,6 @@ Each camera's evidence is in `<out_dir>/<session>/`:
 
 `python scripts/video_quality_survey.py <sessions.csv> <out_dir> --report`
 collects the cards into one PDF behind an index, cameras not in use first.
-
-To keep or drop a camera by hand, write `screen_overrides.csv` next to
-`video_screen.csv`:
-
-```
-session,camera,verdict,note,reviewer,date
-behavior_816212_2025-12-23_10-47-30,bottom_camera,exclude: not looking at the mouse,checked on the card,mb,2026-10-02
-behavior_816883_2025-12-23_12-47-14,side_camera_right,use,clipping only on the paws,mb,2026-10-02
-```
-
-An override replaces the quality decision only: `load_screen` sets `use` from
-`verdict` for a camera that passed timing QC. A camera that failed timing QC
-(or could not be screened) stays `use == False` whatever the override says.
-Each override is recorded in `override_note` (`<verdict> (<reviewer>,
-<date>): <note>`), and `reason` keeps what the screen found. Re-screening
-never touches this file.
 
 To screen new sessions, call `screen_sessions` again with the same `out_dir`:
 cameras already screened by the same library versions are skipped, and

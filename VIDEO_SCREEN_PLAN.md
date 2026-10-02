@@ -124,7 +124,8 @@ Both QC modules expose the same three steps, with parallel names and the same ve
   alias returning the old strings (`DeprecationWarning`); the library's own caller moves to
   `timing_verdict`. `run_checks` / `quality_action` were never released: renamed outright.
   `check_session` (timing) gets a `verdict` column in place of `action`.
-- **Screen row `use`** = both verdicts `use` (or a manual override).
+- **Screen row `use`** = both verdicts `use` (manual overrides removed 2026-10-02; see
+  "Decisions during implementation").
 - **`error: <text>`**: a camera that could not be screened (unreadable file, network). Not an
   exclusion; re-screened on the next run.
 
@@ -172,10 +173,9 @@ Callers build the inputs with whatever suits them: Code Ocean paths, the existin
    `video_screen.jsonl` appended per session (resumable), `video_screen.csv` rebuilt at the end,
    detail files under `<out_dir>/<session>/`; sessions already present with the same library
    version and no error are skipped, so the call doubles as a cache.
-5. **`load_screen(path) -> DataFrame`**: reads `video_screen.csv`, applies
-   `screen_overrides.csv` beside it if present (`session, camera, verdict, note, reviewer, date`;
-   an override replaces the quality decision and records `override_note`; it never brings back
-   a camera that failed timing QC, see "Decisions during implementation").
+5. **`load_screen(path) -> DataFrame`**: reads `video_screen.csv`. (Planned with a
+   `screen_overrides.csv` for manual verdicts; removed 2026-10-02, see "Decisions during
+   implementation".)
 
 ### The table (`video_screen.csv`), one row per session × camera
 
@@ -274,10 +274,12 @@ Where the design above left a choice open, the simplest option was taken:
   failure is an `error:` row (screened again) rather than a silent "middle 50%" window. Found in
   the full run: one camera's JSON fetch failed on a DNS outage and fell back to the middle of the
   file (2026-10-02).
-- **Overrides change the quality decision only** (decided 2026-10-02). An override's verdict sets
-  `use` only for a camera whose timing verdict is `use`; a camera failing timing QC, or not
-  screened (`error:`), stays out whatever the override says. Every override is still recorded
-  in `override_note`.
+- **No manual overrides** (decided 2026-10-02). `screen_overrides.csv` was implemented, then
+  limited to the quality decision (an override must never bring back a camera that failed timing
+  QC), then removed: every exclusion in the 301-session run is a real fault, a false exclusion is
+  better fixed in `CHECKS` (for every similar camera, with evidence), and an analysis that needs
+  a different choice can filter the table in its own code. Add back if reviewers need a shared
+  record of decisions made by eye.
 - **Trigger log column** is a boolean: True when a log was given and readable.
 - **Version 0.2.0.** `__version__` is 0.2.0 in this branch (the release comes with this PR,
   decided 2026-10-02 for Part A); README "Changes" says "0.2.0 (unreleased)". The screen's
@@ -299,7 +301,7 @@ Where the design above left a choice open, the simplest option was taken:
 2. `video_quality_qc`: rename to `check_video_quality` / `quality_verdict` everywhere.
 3. `video_screen`: input handling (temp download of a CSV or log given as a URL), then
    `screen_camera`, `screen_sessions` (incremental by session × camera and library version,
-   workers, quality on/off, cards), `load_screen` with overrides.
+   workers, quality on/off, cards), `load_screen` (overrides later removed).
 4. Survey script builds inputs from its S3 listing and calls `screen_sessions`; README section and "Changes"; plan docs
    (pointers to this file from `VIDEO_QUALITY_QC_PLAN.md` Phase 3 and `VIDEO_TIMING_QC_PLAN.md`;
    this file's status updated as steps land).
@@ -315,7 +317,7 @@ Where the design above left a choice open, the simplest option was taken:
   actions → `use`); trigger-log mismatch and failed re-index now in the checks table; frame-count
   mismatch excludes; `timing_action` alias unchanged with a warning; the timing
   correction's outputs unchanged on every existing test; unreadable log ignored; errors recorded and re-screened; incremental skip;
-  `quality=False`; writes nothing without `out_dir`; overrides in `load_screen`.
+  `quality=False`; writes nothing without `out_dir`; ~~overrides in `load_screen`~~ (removed).
   100% line coverage of `video_screen.py`, `video_quality_qc.py`, `video_quality_report.py` and
   the changed timing code; full suite passes;
   black, isort, flake8 clean.

@@ -9,8 +9,7 @@ searches for files. Nothing is written unless ``out_dir`` is given.
 - :func:`screen_sessions`: many cameras, optionally in parallel; with
   ``out_dir``, writes ``video_screen.csv`` and the per-camera detail files
   and skips cameras already screened by the same library version.
-- :func:`load_screen`: reads ``video_screen.csv`` and applies the manual
-  overrides in ``screen_overrides.csv`` beside it.
+- :func:`load_screen`: reads ``video_screen.csv``.
 
 ``reason`` is empty for a camera in use; otherwise ``timing: exclude:
 <check>`` (``exclude: unreadable`` for a video CSV whose content cannot be
@@ -22,9 +21,7 @@ Columns (``SCREEN_COLUMNS``), one row per session x camera:
 
 - ``session``, ``subject`` (from ``behavior_<subject>_...``), ``camera``,
   ``view`` (``bottom`` or ``side``), ``mp4`` (as given).
-- ``use``: both verdicts ``use`` (no error); a manual override can change
-  the quality decision, never the timing one (:func:`load_screen`).
-  ``reason``: see above.
+- ``use``: both verdicts ``use`` (no error). ``reason``: see above.
 - Timing: ``timing`` (verdict), ``timing_method`` (``as written``,
   ``fix glitches`` or ``re-index``; empty if excluded), ``frames_lost``,
   ``glitch_rows`` (count), ``frame_count_diff`` (MP4 frames minus CSV
@@ -34,8 +31,6 @@ Columns (``SCREEN_COLUMNS``), one row per session x camera:
   ``sharpness``, ``mean``, ``pct_clipped_high``, and ``similarity_p5``.
 - ``versions`` (this package and ``aind-video-utils``; the cache key),
   ``screened_at`` (UTC), ``seconds``.
-
-:func:`load_screen` adds ``override_note``.
 
 Example::
 
@@ -115,7 +110,6 @@ SCREEN_COLUMNS = [
 ]
 SCREEN_FILE = "video_screen.csv"
 SCREEN_LOG = "video_screen.jsonl"
-OVERRIDES_FILE = "screen_overrides.csv"
 CARD_FILE = "session_card_{camera}.png"
 # Timing verdict of a video CSV whose content cannot be used.
 UNREADABLE = "exclude: unreadable"
@@ -531,30 +525,8 @@ def screen_sessions(
 
 
 def load_screen(path) -> pd.DataFrame:
-    """Read ``video_screen.csv`` and apply the overrides beside it.
-
-    ``screen_overrides.csv`` (optional, same folder) has one row per
-    reviewed camera: ``session``, ``camera``, ``verdict`` (``use`` or
-    ``exclude: <why>``), ``note``, ``reviewer``, ``date``. An override
-    replaces the quality decision only (a judgement made by eye): ``use``
-    becomes its verdict for a camera whose timing verdict is ``use``, and
-    stays False for a camera excluded by timing or not screened. Every
-    override is recorded in ``override_note``.
-    """
-    path = Path(path)
+    """Read ``video_screen.csv``: ``subject`` as text, an empty ``reason``
+    as ``""``."""
     screen = pd.read_csv(path, dtype={"subject": str})
     screen["reason"] = screen["reason"].fillna("")
-    screen["override_note"] = None
-    overrides_path = path.parent / OVERRIDES_FILE
-    if overrides_path.exists():
-        overrides = pd.read_csv(overrides_path, dtype=str)
-        for _, o in overrides.iterrows():
-            rows = screen["session"].eq(o["session"]) & screen["camera"].eq(
-                o["camera"]
-            )
-            timing_ok = screen["timing"].eq("use")
-            screen.loc[rows, "use"] = (o["verdict"] == "use") & timing_ok
-            screen.loc[rows, "override_note"] = (
-                f"{o['verdict']} ({o['reviewer']}, {o['date']}): {o['note']}"
-            )
     return screen
