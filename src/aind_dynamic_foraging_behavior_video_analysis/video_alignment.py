@@ -408,20 +408,25 @@ def task_frame_window(behavior_json, video_csv, trigger_log=None):
     """Return the frames from the first trial start to the last trial end.
 
     Trial times come from the raw session JSON (:func:`read_trial_times`).
-    They are put on frames through the Harp time of each CSV row, from the
-    first of these sources that works:
+    They are put on frames through the Harp time of each CSV row, found the
+    way the kinematics pipeline finds it: the timing QC correction
+    (``video_timing_qc.correct_video_timing``), with the trigger log when
+    one is given and readable (an unreadable log is ignored).
+
+    The correction is strict because per-frame analysis needs every frame's
+    time; it refuses a camera for errors of a frame or two (a Harp step off
+    by more than half a frame, a log one event longer than the frame
+    numbers span: 65 of 602 cameras in the survey of
+    ``VIDEO_QUALITY_QC_PLAN.md``). The window only needs to be right to a
+    few frames, so when the correction refuses, it falls back to:
 
     1. the trigger log by frame number, ``log[frame_number -
-       first_frame_number]`` (clipped to the log), when ``trigger_log`` is
-       given. Right whether or not frames were lost;
-    2. the corrected timing (``video_timing_qc.correct_video_timing``);
-    3. the raw Harp column, when no frames were lost (row ``n`` is then
+       first_frame_number]`` (clipped to the log), right whether or not
+       frames were lost;
+    2. the raw Harp column, when no frames were lost (row ``n`` is then
        trigger ``n``).
 
-    A running maximum is applied so a glitch cannot reorder the times. The
-    window only needs to be right to a few frames, which is why 1 and 3 are
-    accepted where the strict correction refuses a camera (65 of 602 in the
-    survey of ``VIDEO_QUALITY_QC_PLAN.md``).
+    A running maximum is applied so a glitch cannot reorder the times.
 
     Parameters
     ----------
@@ -440,8 +445,8 @@ def task_frame_window(behavior_json, video_csv, trigger_log=None):
     Raises
     ------
     ValueError
-        If the JSON has no Harp trial times, the trigger log cannot be read,
-        or without a log the correction is refused and frames were lost.
+        If the JSON has no Harp trial times, or the correction is refused,
+        frames were lost and there is no readable trigger log.
     """
     # video_timing_qc imports this module.
     from aind_dynamic_foraging_behavior_video_analysis import (
@@ -450,14 +455,20 @@ def task_frame_window(behavior_json, video_csv, trigger_log=None):
 
     trials = read_trial_times(behavior_json)
     timing = vtq.load_video_timing(video_csv)
+    log = None
     if trigger_log is not None:
-        log = vtq.read_harp_trigger_log(trigger_log)
-        exposure = timing["frame_number"].to_numpy()
-        harp = log[np.clip(exposure - exposure[0], 0, len(log) - 1)]
-    else:
         try:
-            harp = vtq.correct_video_timing(timing)["harp_time"].to_numpy()
-        except ValueError:
+            log = vtq.read_harp_trigger_log(trigger_log)
+        except (ValueError, OSError):
+            pass
+    try:
+        harp = vtq.correct_video_timing(timing, trigger_times=log)
+        harp = harp["harp_time"].to_numpy()
+    except ValueError:
+        if log is not None:
+            exposure = timing["frame_number"].to_numpy()
+            harp = log[np.clip(exposure - exposure[0], 0, len(log) - 1)]
+        else:
             checks = vtq.check_video_timing(timing).set_index("check")
             if checks.loc["no_frames_lost", "passed"] is not True:
                 raise
