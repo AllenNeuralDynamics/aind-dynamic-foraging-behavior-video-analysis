@@ -371,6 +371,38 @@ class ScreenSessionsTest(ScreenTest):
             "exclude: mouse out of view (mb, 2026-10-02): checked by eye",
         )
 
+    def test_overrides_never_undo_timing(self):
+        """Overriding to use brings back a quality exclusion, but not a
+        timing exclusion or an error."""
+        folder = self.tmp / "hand"
+        folder.mkdir()
+        pd.DataFrame(
+            {
+                "session": ["a", "b", "c"],
+                "camera": ["side_camera"] * 3,
+                "use": [False] * 3,
+                "reason": [
+                    "quality: exclude: pct_clipped_high median <= 3.75",
+                    "timing: exclude: harp_evenly_spaced",
+                    "error: URLError: timed out",
+                ],
+                "timing": ["use", "exclude: harp_evenly_spaced", None],
+            }
+        ).to_csv(folder / vs.SCREEN_FILE, index=False)
+        pd.DataFrame(
+            {
+                "session": ["a", "b", "c"],
+                "camera": ["side_camera"] * 3,
+                "verdict": ["use"] * 3,
+                "note": ["clipping only on the paws"] * 3,
+                "reviewer": ["mb"] * 3,
+                "date": ["2026-10-02"] * 3,
+            }
+        ).to_csv(folder / vs.OVERRIDES_FILE, index=False)
+        screen = vs.load_screen(folder / vs.SCREEN_FILE)
+        self.assertEqual(screen["use"].tolist(), [True, False, False])
+        self.assertTrue(screen["override_note"].notna().all())
+
     def test_url_download_cached_per_session(self):
         """Two cameras of a session share one download of the log."""
         log_url = URL + "Event_94.bin"

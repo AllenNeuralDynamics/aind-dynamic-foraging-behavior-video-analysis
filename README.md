@@ -187,8 +187,8 @@ writes `video_timing_<camera>.json` and the quality files (and the session
 card with `cards=True`) under `<out_dir>/<session>/`, and skips cameras
 already screened by the same library versions. `quality=False` screens
 timing only. `load_screen` applies `screen_overrides.csv` beside the table
-(`session, camera, verdict, note, reviewer, date`), so a camera can be kept
-or dropped by hand with the reason recorded. Columns and decisions:
+(`session, camera, verdict, note, reviewer, date`), so the quality decision
+for a camera can be changed by hand with the reason recorded. Columns and decisions:
 `VIDEO_SCREEN_PLAN.md`. `scripts/video_quality_survey.py` builds the inputs
 from the public S3 bucket and screens many sessions.
 
@@ -233,11 +233,11 @@ behavior_816212_2025-12-23_10-47-30,bottom_camera,exclude: not looking at the mo
 behavior_816883_2025-12-23_12-47-14,side_camera_right,use,clipping only on the paws,mb,2026-10-02
 ```
 
-`load_screen` then sets `use` from `verdict` and puts
-`<verdict> (<reviewer>, <date>): <note>` in `override_note`; `reason` keeps
-what the screen found. An override replaces the whole decision, timing
-included, so check `reason` before overriding to `use`: a camera excluded by
-timing has untrustworthy frame times whatever the card shows. Re-screening
+An override replaces the quality decision only: `load_screen` sets `use` from
+`verdict` for a camera that passed timing QC. A camera that failed timing QC
+(or could not be screened) stays `use == False` whatever the override says.
+Each override is recorded in `override_note` (`<verdict> (<reviewer>,
+<date>): <note>`), and `reason` keeps what the screen found. Re-screening
 never touches this file.
 
 To screen new sessions, call `screen_sessions` again with the same `out_dir`:

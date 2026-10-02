@@ -174,7 +174,8 @@ Callers build the inputs with whatever suits them: Code Ocean paths, the existin
    version and no error are skipped, so the call doubles as a cache.
 5. **`load_screen(path) -> DataFrame`**: reads `video_screen.csv`, applies
    `screen_overrides.csv` beside it if present (`session, camera, verdict, note, reviewer, date`;
-   an override replaces `use` and records `override_note`).
+   an override replaces the quality decision and records `override_note`; it never brings back
+   a camera that failed timing QC, see "Decisions during implementation").
 
 ### The table (`video_screen.csv`), one row per session × camera
 
@@ -273,6 +274,10 @@ Where the design above left a choice open, the simplest option was taken:
   failure is an `error:` row (screened again) rather than a silent "middle 50%" window. Found in
   the full run: one camera's JSON fetch failed on a DNS outage and fell back to the middle of the
   file (2026-10-02).
+- **Overrides change the quality decision only** (decided 2026-10-02). An override's verdict sets
+  `use` only for a camera whose timing verdict is `use`; a camera failing timing QC, or not
+  screened (`error:`), stays out whatever the override says. Every override is still recorded
+  in `override_note`.
 - **Trigger log column** is a boolean: True when a log was given and readable.
 - **Version 0.2.0.** `__version__` is 0.2.0 in this branch (the release comes with this PR,
   decided 2026-10-02 for Part A); README "Changes" says "0.2.0 (unreleased)". The screen's

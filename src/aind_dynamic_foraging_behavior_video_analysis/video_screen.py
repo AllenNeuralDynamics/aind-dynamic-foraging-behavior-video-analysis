@@ -22,7 +22,9 @@ Columns (``SCREEN_COLUMNS``), one row per session x camera:
 
 - ``session``, ``subject`` (from ``behavior_<subject>_...``), ``camera``,
   ``view`` (``bottom`` or ``side``), ``mp4`` (as given).
-- ``use``: both verdicts ``use`` (no error). ``reason``: see above.
+- ``use``: both verdicts ``use`` (no error); a manual override can change
+  the quality decision, never the timing one (:func:`load_screen`).
+  ``reason``: see above.
 - Timing: ``timing`` (verdict), ``timing_method`` (``as written``,
   ``fix glitches`` or ``re-index``; empty if excluded), ``frames_lost``,
   ``glitch_rows`` (count), ``frame_count_diff`` (MP4 frames minus CSV
@@ -534,7 +536,10 @@ def load_screen(path) -> pd.DataFrame:
     ``screen_overrides.csv`` (optional, same folder) has one row per
     reviewed camera: ``session``, ``camera``, ``verdict`` (``use`` or
     ``exclude: <why>``), ``note``, ``reviewer``, ``date``. An override
-    sets ``use`` from its verdict and records ``override_note``.
+    replaces the quality decision only (a judgement made by eye): ``use``
+    becomes its verdict for a camera whose timing verdict is ``use``, and
+    stays False for a camera excluded by timing or not screened. Every
+    override is recorded in ``override_note``.
     """
     path = Path(path)
     screen = pd.read_csv(path, dtype={"subject": str})
@@ -547,7 +552,8 @@ def load_screen(path) -> pd.DataFrame:
             rows = screen["session"].eq(o["session"]) & screen["camera"].eq(
                 o["camera"]
             )
-            screen.loc[rows, "use"] = o["verdict"] == "use"
+            timing_ok = screen["timing"].eq("use")
+            screen.loc[rows, "use"] = (o["verdict"] == "use") & timing_ok
             screen.loc[rows, "override_note"] = (
                 f"{o['verdict']} ({o['reviewer']}, {o['date']}): {o['note']}"
             )
