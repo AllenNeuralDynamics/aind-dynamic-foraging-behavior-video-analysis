@@ -1181,7 +1181,7 @@ def integrate_keypoints_with_video_time(video_csv_path, keypoint_dfs,
     timing = video_timing_qc.load_video_timing(video_csv_path)
     checks = video_timing_qc.check_video_timing(timing)
     failed = checks[checks["passed"].eq(False)]
-    print(f"Video QC: {video_timing_qc.timing_action(checks)} ({len(timing)} rows)")
+    print(f"Video QC: {video_timing_qc.timing_verdict(checks)} ({len(timing)} rows)")
     for _, check in failed.iterrows():
         print(f"  failed {check['check']}: {check['message']}")
     trigger_times = None
