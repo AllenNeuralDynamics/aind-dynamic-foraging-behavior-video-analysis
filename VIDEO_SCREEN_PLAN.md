@@ -1,7 +1,7 @@
 # Plan: video screening before analysis (Phase 3 of video timing + quality QC)
 
 > **Status (2026-10-02): Part A merged (PR #9). Part B in progress on `feat/video-screen`:
-> step 1 (symmetric timing module) done.** Decisions so far are dated in place. Background:
+> steps 1 (symmetric timing module) and 2 (quality renames) done.** Decisions so far are dated in place. Background:
 > `VIDEO_QUALITY_QC_PLAN.md` (revisions 1–8) and `VIDEO_TIMING_QC_PLAN.md`.
 
 ## Context

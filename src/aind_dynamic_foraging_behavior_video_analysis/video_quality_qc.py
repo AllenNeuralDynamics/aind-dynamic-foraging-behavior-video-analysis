@@ -14,8 +14,8 @@ Pipeline, one function per step (:func:`video_quality` chains them):
    B-frame's on these files).
 3. :func:`measure`: adds every metric to the samples table, one row per
    keyframe (luma only; the cameras are monochrome IR).
-4. :func:`run_checks`: applies ``CHECKS``, one row per check.
-5. :func:`quality_action`: ``use``, or ``exclude: <check>`` for the first
+4. :func:`check_video_quality`: applies ``CHECKS``, one row per check.
+5. :func:`quality_verdict`: ``use``, or ``exclude: <check>`` for the first
    failed check. The module never removes data.
 
 :func:`write_video_quality` saves the samples (parquet) and the checks
@@ -29,7 +29,7 @@ Example::
         "behavior/<subject>_<datetime>.json",
         "behavior-videos/bottom_camera.csv",
     )
-    quality_action(checks)  # "use" or "exclude: <check>"
+    quality_verdict(checks)  # "use" or "exclude: <check>"
     write_video_quality(samples, checks, "results/", "bottom_camera", note)
 """
 
@@ -353,7 +353,7 @@ def camera_view(camera):
     return next((v for v in ("bottom", "side") if name.startswith(v)), None)
 
 
-def run_checks(samples, camera):
+def check_video_quality(samples, camera):
     """Apply every check in ``CHECKS`` that covers ``camera``.
 
     Returns
@@ -395,7 +395,7 @@ def run_checks(samples, camera):
     return pd.DataFrame(rows)
 
 
-def quality_action(checks):
+def quality_verdict(checks):
     """``"exclude: <check>"`` for the first failed check, otherwise
     ``"use"``."""
     failed = checks.loc[~checks["passed"].astype(bool), "check"]
@@ -404,7 +404,7 @@ def quality_action(checks):
 
 def write_video_quality(samples, checks, out_dir, camera, note):
     """Write ``SAMPLES_FILE`` (the samples, with histograms) and
-    ``RECORD_FILE`` (camera, window note, versions, checks, action) into
+    ``RECORD_FILE`` (camera, window note, versions, checks, verdict) into
     ``out_dir``; return both paths."""
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -419,7 +419,7 @@ def write_video_quality(samples, checks, out_dir, camera, note):
             "aind_video_utils": aind_video_utils_version,
         },
         "checks": json.loads(checks.to_json(orient="records")),
-        "action": quality_action(checks),
+        "verdict": quality_verdict(checks),
     }
     record_path.write_text(json.dumps(record, indent=2))
     return record_path, samples_path
@@ -433,10 +433,10 @@ def video_quality(
     Returns
     -------
     (frames, samples, checks, note)
-        See :func:`sample_keyframes`, :func:`measure`, :func:`run_checks`
-        and :func:`sample_window`.
+        See :func:`sample_keyframes`, :func:`measure`,
+        :func:`check_video_quality` and :func:`sample_window`.
     """
     window, note = sample_window(behavior_json, video_csv, trigger_log)
     frames, samples, color_range = sample_keyframes(path, window)
     samples = measure(frames, samples, color_range)
-    return frames, samples, run_checks(samples, camera), note
+    return frames, samples, check_video_quality(samples, camera), note

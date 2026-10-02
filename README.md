@@ -90,7 +90,7 @@ frames, samples, checks, note = vqq.video_quality(
     video_csv="behavior-videos/bottom_camera.csv",
     trigger_log="behavior/raw.harp/BehaviorEvents/Event_94.bin",
 )
-vqq.quality_action(checks)   # "use" or "exclude: <check>"
+vqq.quality_verdict(checks)   # "use" or "exclude: <check>"
 vqq.write_video_quality(samples, checks, "results/", "bottom_camera", note)
 vqr.session_card(frames, samples, checks, "<session>  bottom_camera")
 
@@ -98,7 +98,7 @@ vqr.session_card(frames, samples, checks, "<session>  bottom_camera")
 window, note = vqq.sample_window(behavior_json, video_csv, trigger_log)
 frames, samples, color_range = vqq.sample_keyframes(mp4, window)
 samples = vqq.measure(frames, samples, color_range)
-checks = vqq.run_checks(samples, camera)
+checks = vqq.check_video_quality(samples, camera)
 ```
 
 Checks (`CHECKS`; values set on a survey of 301 FIP sessions, 602 cameras):

@@ -204,7 +204,7 @@ def run_camera(
         medians = samples.median(numeric_only=True).add_suffix("_med")
         row.update(
             {
-                "action": vqq.quality_action(checks),
+                "action": vqq.quality_verdict(checks),
                 "failed_checks": ";".join(
                     checks.loc[~checks["passed"], "check"]
                 ),

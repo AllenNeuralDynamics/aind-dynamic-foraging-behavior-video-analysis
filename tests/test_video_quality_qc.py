@@ -398,7 +398,7 @@ class CheckTest(TempDirTest):
         """Encode, measure and check one video; return samples, checks."""
         path = write_mp4(self.tmp / f"{name}.mp4", fault=fault)
         _, samples = measure_mp4(path)
-        return samples, vqq.run_checks(samples, camera)
+        return samples, vqq.check_video_quality(samples, camera)
 
     def test_clean(self):
         """Every check passes; the side camera also gets the clipping
@@ -407,7 +407,7 @@ class CheckTest(TempDirTest):
         self.assertEqual(len(samples), 29)
         self.assertLess(samples["shift"].max(), 0.5)
         self.assertGreater(samples["similarity"].min(), 0.9)
-        self.assertEqual(vqq.quality_action(checks), "use")
+        self.assertEqual(vqq.quality_verdict(checks), "use")
         self.assertEqual(
             check_names(checks, True),
             [
@@ -419,7 +419,7 @@ class CheckTest(TempDirTest):
                 "mean median <= 150",
             ],
         )
-        side = vqq.run_checks(samples, "SideCameraRight")
+        side = vqq.check_video_quality(samples, "SideCameraRight")
         self.assertEqual(
             side["check"].iloc[-1], "pct_clipped_high median <= 3.75"
         )
@@ -441,7 +441,7 @@ class CheckTest(TempDirTest):
         """Blur from frame 200 on: 10 samples in a run."""
         _, checks = self.run_video("defocus", after(200, blur))
         self.assertEqual(
-            vqq.quality_action(checks), "exclude: sharpness_dev <= 0.45"
+            vqq.quality_verdict(checks), "exclude: sharpness_dev <= 0.45"
         )
         row = checks.set_index("check").loc["sharpness_dev <= 0.45"]
         self.assertEqual(row["observed"], 10)
@@ -523,7 +523,7 @@ class CheckTest(TempDirTest):
 
         samples, bottom = self.run_video("clipped", after(0, clip))
         self.assertGreaterEqual(samples["pct_clipped_high"].median(), 25)
-        side = vqq.run_checks(samples, "side_camera_right")
+        side = vqq.check_video_quality(samples, "side_camera_right")
         self.assertIn(
             "pct_clipped_high median <= 3.75", check_names(side, False)
         )
@@ -693,12 +693,12 @@ class OutputTest(TempDirTest):
         self.assertTrue(note.startswith("middle 50%"))
         self.assertEqual(samples["frame_index"].iloc[0], 80)
         self.assertEqual(
-            vqq.quality_action(checks), "exclude: sharpness_dev <= 0.45"
+            vqq.quality_verdict(checks), "exclude: sharpness_dev <= 0.45"
         )
 
     def test_write_and_read_back(self):
         """The parquet keeps every column and the histograms; the JSON is
-        valid (no NaN) and holds the checks and the action."""
+        valid (no NaN) and holds the checks and the verdict."""
         _, samples, checks, note = self.bad
         record_path, samples_path = vqq.write_video_quality(
             samples, checks, self.tmp / "out", "bottom_camera", note
@@ -718,7 +718,7 @@ class OutputTest(TempDirTest):
         self.assertEqual(record["camera"], "bottom_camera")
         self.assertEqual(record["window"], note)
         self.assertIn("aind_video_utils", record["versions"])
-        self.assertEqual(record["action"], vqq.quality_action(checks))
+        self.assertEqual(record["verdict"], vqq.quality_verdict(checks))
         self.assertEqual(
             pd.DataFrame(record["checks"])["passed"].tolist(),
             checks["passed"].tolist(),
