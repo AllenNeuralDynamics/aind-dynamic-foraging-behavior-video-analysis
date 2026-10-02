@@ -18,6 +18,23 @@ used), ``quality: exclude: <check>``, or ``error: <text>`` for a camera
 that could not be screened (a file that cannot be opened, network), which
 is not an exclusion and is screened again on the next run.
 
+Columns (``SCREEN_COLUMNS``), one row per session x camera:
+
+- ``session``, ``subject`` (from ``behavior_<subject>_...``), ``camera``,
+  ``view`` (``bottom`` or ``side``), ``mp4`` (as given).
+- ``use``: both verdicts ``use`` (no error). ``reason``: see above.
+- Timing: ``timing`` (verdict), ``timing_method`` (``as written``,
+  ``fix glitches`` or ``re-index``; empty if excluded), ``frames_lost``,
+  ``glitch_rows`` (count), ``frame_count_diff`` (MP4 frames minus CSV
+  rows), ``trigger_log`` (a readable log was used).
+- Quality (empty with ``quality=False``): ``quality`` (verdict),
+  ``window`` (``task`` or ``middle 50%: <why>``), session medians
+  ``sharpness``, ``mean``, ``pct_clipped_high``, and ``similarity_p5``.
+- ``versions`` (this package and ``aind-video-utils``; the cache key),
+  ``screened_at`` (UTC), ``seconds``.
+
+:func:`load_screen` adds ``override_note``.
+
 Example::
 
     inputs = pd.DataFrame([{

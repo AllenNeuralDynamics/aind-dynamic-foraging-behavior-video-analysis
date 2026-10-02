@@ -192,6 +192,60 @@ or dropped by hand with the reason recorded. Columns and decisions:
 `VIDEO_SCREEN_PLAN.md`. `scripts/video_quality_survey.py` builds the inputs
 from the public S3 bucket and screens many sessions.
 
+### Using the screen
+
+Always read the table with `load_screen`, which applies the overrides, and
+decide with the `use` column, never by parsing `reason`.
+
+```python
+screen = vs.load_screen("screen/video_screen.csv")
+
+# Cameras to analyze: filter per camera, since an analysis may need only one view.
+bottom = screen.query("view == 'bottom' and use")
+for session in bottom.session: ...
+
+# Sessions where every camera can be used.
+all_ok = screen.groupby("session")["use"].all()
+sessions = all_ok[all_ok].index
+
+# Why cameras are dropped (first failure, timing before quality).
+screen.loc[~screen.use, "reason"].value_counts()
+```
+
+Each camera's evidence is in `<out_dir>/<session>/`:
+
+| File | Holds |
+|---|---|
+| `video_timing_<camera>.json` | timing verdict, correction method, trigger log used, frames lost, glitch rows, every check (`passed`, `count`, `message`, offending rows) |
+| `video_quality_<camera>.json` | sampling window, every quality check with its observed value, verdict |
+| `video_quality_<camera>.parquet` | every metric per sampled keyframe, with luma histograms |
+| `session_card_<camera>.png` | one page for review by eye (with `cards=True`) |
+
+`python scripts/video_quality_survey.py <sessions.csv> <out_dir> --report`
+collects the cards into one PDF behind an index, cameras not in use first.
+
+To keep or drop a camera by hand, write `screen_overrides.csv` next to
+`video_screen.csv`:
+
+```
+session,camera,verdict,note,reviewer,date
+behavior_816212_2025-12-23_10-47-30,bottom_camera,exclude: not looking at the mouse,checked on the card,mb,2026-10-02
+behavior_816883_2025-12-23_12-47-14,side_camera_right,use,clipping only on the paws,mb,2026-10-02
+```
+
+`load_screen` then sets `use` from `verdict` and puts
+`<verdict> (<reviewer>, <date>): <note>` in `override_note`; `reason` keeps
+what the screen found. An override replaces the whole decision, timing
+included, so check `reason` before overriding to `use`: a camera excluded by
+timing has untrustworthy frame times whatever the card shows. Re-screening
+never touches this file.
+
+To screen new sessions, call `screen_sessions` again with the same `out_dir`:
+cameras already screened by the same library versions are skipped, and
+`error:` rows are screened again. Columns are listed in the `video_screen`
+module docstring. Counts (`frames_lost`, ...) read back from the CSV as
+floats, since cameras without timing checks leave them empty.
+
 
 ## Changes
 
