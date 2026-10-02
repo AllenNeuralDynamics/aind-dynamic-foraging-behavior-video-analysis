@@ -5,7 +5,9 @@
 > checks, session helpers, batch PDF) and the task-window fallbacks; where it and older sections
 > disagree, revision 8 wins. The evidence and calibration in "Findings" and "Decisions:
 > calibration" still hold, and the check values do not change. Revision 8 is implemented (see
-> "Revision 8: implemented"). Next: Phase 3.
+> "Revision 8: implemented"), with two revisions after review (2026-10-02): the task window follows
+> the timing QC procedure first, and the reference frame is the median of all samples. Next:
+> re-run the survey to confirm the similarity cutoffs, then Phase 3.
 >
 > Revision 7 (2026-10-01): Phases 1–2 done. Surveys of 97, then all 301 curated FIP
 > sessions set the stability tolerances (sharpness 0.45, similarity 0.7); revision 7 records the
@@ -179,16 +181,28 @@ stored. `task_frame_window` gives the stored window both with the trigger log an
 
 Decisions the plan left open (simplest option taken):
 
-- **Trigger log**: when given, it is the only source tried. An unreadable log raises (no fall
-  through to the correction), and `sample_window` then samples the middle 50% with the reason.
-  The correction is called without trigger times, since it is only reached without a log.
+- **Task window order (revised after review, 2026-10-02)**: the window now follows the timing QC
+  procedure first: `correct_video_timing`, with the trigger log when one is given, exactly as
+  `integrate_keypoints_with_video_time` does, so the window and the pipeline place frames the
+  same way. Only when that strict correction refuses (65 of 602 cameras, for errors of a frame or
+  two) does it fall back to the trigger log by frame number, then the raw Harp column when no
+  frames were lost. An unreadable log is ignored (CSV only), not an error. Implemented first as
+  "log by frame number first", which gave the same windows on the cameras checked.
 - **`sample_window`** catches `ValueError` and `OSError` (missing CSV file, network errors).
   Missing inputs give one note, `"middle 50%: no behavior JSON or video CSV"`.
 - **Whole file**: no flag; pass a window past the end, e.g. `(0, 10**9)`.
 - **Display range on the card**: `session_card` has no colour-range argument, so `measure` adds a
   constant `color_range` column to the samples.
-- **Reference frame**: a small public `reference_frame(frames)` shared by `measure` and the card.
-  It keeps the old truncation to uint8, so similarity and shift match stored values.
+- **Reference frame (revised after review, 2026-10-02)**: `reference_frame(frames)`, shared by
+  `measure` and the card, is the pixel-wise median of **all** samples (rounded), no longer of the
+  first 10. It is the session's typical view, the same basis as `sharpness_dev` and `mean_dev`
+  (relative to the session median), and it ignores anything present in under half the session.
+  With the first-10 reference, `820688_2026-01-27`'s dark first 14 minutes became the reference,
+  so every normal sample read as dissimilar and the card pointed at the wrong part of the
+  session; now the dark samples are the dissimilar ones (test `test_dark_start_flags_the_dark
+  _samples`). Similarity rises slightly on normal sessions (`800886_2025-08-18` side camera p5
+  0.882 → 0.907). The similarity cutoffs (0.7, 0.998) were calibrated with the old reference, so
+  the survey is re-run to confirm them (below).
 - **8-bit only**: luma is read from 8-bit planar formats, so `luma_range(8, ...)` and 256-bin
   histograms. Intensity statistics are the plan's list only (p5, p50, p95, `pct_at_min/max`,
   `pct_below_floor/above_ceiling`, `pct_outside_tagged` dropped).
@@ -211,6 +225,30 @@ Decisions the plan left open (simplest option taken):
 - **Lint**: flake8 is clean on every touched file. That meant reflowing old over-long docstring
   lines in `video_alignment.py` and removing black-style `a[x : y]` slices (E203) in the survey
   script and the test fixture.
+
+### Survey with the revision 8 code (2026-10-01)
+
+All 301 sessions of `me_sessions_fip_curated.csv` (602 cameras) re-run with
+`scripts/video_quality_survey.py` into `video_quality_qc_data/survey_fip/`, replacing the
+revision 7 outputs (side analyses kept in `video_quality_qc_data/rev7_analyses/`). 91 min with 8
+workers. 3 cameras (`820691_2026-01-14` side, `820691_2026-01-20` both) hit transient S3 errors
+(HTTP 503, `InvalidDataError` mid-decode) and passed on re-run.
+
+| Action | Cameras |
+|---|---|
+| `use` | 563 |
+| `exclude: pct_clipped_high median <= 3.75` (side) | 36 (818586: 19, 809487: 14, 816883: 2, 809491: 1) |
+| `exclude: sharpness_dev <= 0.45` | 2 (`820688_2026-01-27` both: IR off for the first 14 min) |
+| `exclude: similarity p5 < 0.998` | 1 (`816212_2025-12-23` bottom: no mouse in view) |
+
+Exactly the actions predicted by applying the revision 8 checks to the revision 7 samples. The
+5 revision 7 false positives (spout moves, posture change) are `use`. Windows: 601 task (the
+cameras the strict correction refuses are placed by the fallbacks), 1 middle 50%
+(`808057_2025-09-03` side, CSV with missing values; `use`, where whole-file sampling excluded it
+for the empty rig at the end). The brightness limits exclude nothing.
+
+This survey used the first-10-samples reference; a re-run with the all-samples reference and the
+revised window order is needed to confirm the similarity cutoffs before Phase 3.
 
 ## Summary
 
@@ -588,7 +626,7 @@ sensor noise.
 | `shift_x`, `shift_y`, `shift` | phase correlation (Hann window, parabolic sub-pixel peak) of the full-res frame against the reference | **reported only**: a spout move reads the same as a camera bump (Findings 2) |
 | `histogram` | 256 luma counts | report histogram; re-deriving any percentile later |
 
-**Reference frame**: the pixel-wise median of the first 10 samples. The median ignores a moving
+**Reference frame** (revision 8: all samples, see "Revision 8: implemented"): the pixel-wise median of the first 10 samples. The median ignores a moving
 mouse. It is stored and shown in the report.
 
 **Deferred**: flicker and frozen frames (need consecutive frames; duplicates are already caught

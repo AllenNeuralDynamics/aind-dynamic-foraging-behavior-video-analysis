@@ -122,8 +122,12 @@ The recording often runs past the session (and starts before it), which
 fails the stability checks, so the task is sampled.
 `video_alignment.task_frame_window` places it: trial times from the raw
 session JSON (the same values as the NWB trials table, so no NWB is
-needed), and Harp time per frame from the trigger log by frame number, else
-the corrected timing, else the raw Harp column when no frames were lost.
+needed), put on frames by the same timing QC correction the kinematics
+pipeline uses (with the trigger log when present). Where that strict
+correction refuses a camera for an error of a frame or two, the window falls
+back to the trigger log by frame number, else the raw Harp column when no
+frames were lost. The reference for `similarity` and `shift` is the
+pixel-wise median of all samples, the session's typical view.
 
 Outputs per camera: `video_quality_<camera>.parquet` (every metric per
 keyframe, with histograms) and `video_quality_<camera>.json` (window note,
