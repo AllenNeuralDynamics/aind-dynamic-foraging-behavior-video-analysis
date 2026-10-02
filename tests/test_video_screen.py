@@ -178,6 +178,41 @@ class ScreenCameraTest(ScreenTest):
         self.assertTrue(row["reason"].startswith("error: "))
         self.assertIsNone(row["timing"])
 
+    def test_unusable_csv_excluded(self):
+        """A CSV with missing values is excluded, not an error; quality is
+        still measured (middle of the file) and the reason is recorded,
+        naming the CSV as given."""
+        inputs = write_session(self.tmp / "gaps")
+        lines = Path(inputs["video_csv"]).read_text().splitlines()
+        lines[10] = lines[10].rsplit(",", 1)[0] + ","
+        Path(inputs["video_csv"]).write_text("\n".join(lines) + "\n")
+        out = self.tmp / "gaps_out"
+        record_path = out / SESSION / "video_timing_bottom_camera.json"
+        row = self.screen(inputs, out_dir=out)
+        self.assertEqual(row["reason"], "timing: exclude: unreadable")
+        self.assertFalse(row["use"])
+        self.assertEqual(row["quality"], "use")
+        self.assertTrue(row["window"].startswith("middle 50%"))
+        self.assertTrue(row["trigger_log"])
+        self.assertIsNone(row["frames_lost"])
+        record = json.loads(record_path.read_text())
+        self.assertEqual(record["verdict"], "exclude: unreadable")
+        self.assertIn("missing values", record["error"])
+        self.assertIn(inputs["video_csv"], record["error"])
+        # Given as a URL: the URL is named, not its download.
+        served = Path(inputs["video_csv"]).read_bytes()
+        with mock.patch(
+            "urllib.request.urlopen",
+            side_effect=lambda *a, **k: io.BytesIO(served),
+        ):
+            row = self.screen(
+                {**inputs, "video_csv": URL + "c.csv"}, out_dir=out
+            )
+        self.assertIn(URL + "c.csv", row["window"])
+        self.assertIn(
+            URL + "c.csv", json.loads(record_path.read_text())["error"]
+        )
+
     def test_unreachable_json_is_an_error(self):
         """A session JSON URL that cannot be fetched is an error (screened
         again next time), not a silent fallback to the middle 50%."""

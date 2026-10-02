@@ -13,9 +13,10 @@ searches for files. Nothing is written unless ``out_dir`` is given.
   overrides in ``screen_overrides.csv`` beside it.
 
 ``reason`` is empty for a camera in use; otherwise ``timing: exclude:
-<check>``, ``quality: exclude: <check>``, or ``error: <text>`` for a camera
-that could not be screened (unreadable file, network), which is not an
-exclusion and is screened again on the next run.
+<check>`` (``exclude: unreadable`` for a video CSV whose content cannot be
+used), ``quality: exclude: <check>``, or ``error: <text>`` for a camera
+that could not be screened (a file that cannot be opened, network), which
+is not an exclusion and is screened again on the next run.
 
 Example::
 
@@ -97,6 +98,8 @@ SCREEN_FILE = "video_screen.csv"
 SCREEN_LOG = "video_screen.jsonl"
 OVERRIDES_FILE = "screen_overrides.csv"
 CARD_FILE = "session_card_{camera}.png"
+# Timing verdict of a video CSV whose content cannot be used.
+UNREADABLE = "exclude: unreadable"
 # A download gives up on a stalled read after this many seconds; the
 # camera then records an error and is screened again on the next run.
 DOWNLOAD_TIMEOUT_S = 120
@@ -146,8 +149,30 @@ def _subject(session):
     return match.group(1) if match else None
 
 
-def _screen_timing(mp4, csv, trigger_log, tmp, session_out, camera):
-    """Timing QC of one camera: ``(columns, local trigger log or None)``."""
+def _write_unreadable(session_out, camera, message):
+    """The timing record of a camera whose CSV content cannot be used."""
+    session_out.mkdir(parents=True, exist_ok=True)
+    record = {
+        "camera": camera,
+        "verdict": UNREADABLE,
+        "error": message,
+        "versions": {
+            "aind_dynamic_foraging_behavior_video_analysis": __version__,
+        },
+    }
+    path = session_out / vtq.RECORD_FILE.format(camera=camera)
+    path.write_text(json.dumps(record, indent=2))
+
+
+def _screen_timing(mp4, video_csv, trigger_log, tmp, session_out, camera):
+    """Timing QC of one camera: ``(columns, local CSV, local trigger log
+    or None)``.
+
+    A CSV whose content cannot be used (no rows, unknown header, missing
+    values) is excluded as ``unreadable``: it fails the same way on every
+    run, so it is not an error. Failing to open it is an error.
+    """
+    csv = _local(video_csv, tmp)
     log_path, log_times = None, None
     if trigger_log is not None:
         try:
@@ -155,9 +180,18 @@ def _screen_timing(mp4, csv, trigger_log, tmp, session_out, camera):
             log_times = vtq.read_harp_trigger_log(log_path)
         except (ValueError, OSError):
             log_path = None  # unreadable: as without a log
+    try:
+        timing = vtq.load_video_timing(csv)
+    except ValueError as e:
+        if session_out is not None:
+            # Name the CSV as given, not its temporary download.
+            message = str(e).replace(str(csv), str(video_csv))
+            _write_unreadable(session_out, camera, message)
+        columns = {"timing": UNREADABLE, "trigger_log": log_times is not None}
+        return columns, csv, log_path
     n_frames = read_mp4_frame_index(mp4).n_samples
     checks = vtq.check_video_timing(
-        vtq.load_video_timing(csv), log_times, video_frame_count=n_frames
+        timing, log_times, video_frame_count=n_frames
     )
     if session_out is not None:
         vtq.write_video_timing(checks, session_out, camera)
@@ -170,14 +204,19 @@ def _screen_timing(mp4, csv, trigger_log, tmp, session_out, camera):
         "frame_count_diff": int(counts["video_frame_count"]),
         "trigger_log": log_times is not None,
     }
-    return columns, log_path
+    return columns, csv, log_path
 
 
-def _screen_quality(row, behavior_json, csv, log_path, session_out, cards):
-    """Quality QC of one camera: its columns of the row."""
+def _screen_quality(
+    row, behavior_json, csv, log_path, session_out, cards, given
+):
+    """Quality QC of one camera: its columns of the row. ``given`` maps
+    each local copy to the location as given, for the window note."""
     frames, samples, checks, note = vqq.video_quality(
         row["mp4"], row["camera"], behavior_json, csv, log_path
     )
+    for local, location in given.items():
+        note = note.replace(local, location)
     if session_out is not None:
         vqq.write_video_quality(
             samples, checks, session_out, row["camera"], note
@@ -234,19 +273,24 @@ def _screen_camera(
     )
     session_out = None if out_dir is None else Path(out_dir) / str(session)
     try:
-        csv = _local(video_csv, tmp)
+        json_path = None
         if behavior_json is not None:
             # Downloaded here so a network failure is an error, not a
             # fallback window.
-            behavior_json = _local(behavior_json, tmp)
-        timing, log_path = _screen_timing(
-            mp4, csv, trigger_log, tmp, session_out, camera
+            json_path = _local(behavior_json, tmp)
+        timing, csv, log_path = _screen_timing(
+            mp4, video_csv, trigger_log, tmp, session_out, camera
         )
         row.update(timing)
         if quality:
+            given = {
+                str(csv): str(video_csv),
+                str(json_path): str(behavior_json),
+                str(log_path): str(trigger_log),
+            }
             row.update(
                 _screen_quality(
-                    row, behavior_json, csv, log_path, session_out, cards
+                    row, json_path, csv, log_path, session_out, cards, given
                 )
             )
         row["reason"] = _reason(row, quality)

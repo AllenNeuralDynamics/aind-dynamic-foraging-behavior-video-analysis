@@ -260,6 +260,13 @@ Where the design above left a choice open, the simplest option was taken:
   session × camera of everything in the log, not only the current inputs.
 - **Errors.** `reason` is `error: <type>: <message> (<file>:<line>)`; the timing and quality
   columns stay empty.
+- **Unusable video CSV is an exclusion, not an error** (decided 2026-10-02, after the full run).
+  When `load_video_timing` raises `ValueError` (no rows, unknown header, missing values), timing
+  is `exclude: unreadable` (the wording of `check_session`), `video_timing_<camera>.json` records
+  the message, and quality still runs (middle 50% of the file, as the survey did). Such a CSV
+  fails the same way on every run, so retrying it as an error would be pointless. A CSV that
+  cannot be opened or downloaded (`OSError`) is still an error. Messages and window notes name
+  the inputs as given (the URL), not their temporary downloads.
 - **Frame count** comes from the MP4 index (`read_mp4_frame_index(mp4).n_samples`), read once
   for timing and again by quality sampling.
 - **Session JSON given as a URL is downloaded first**, like the CSV and the log, so a network
@@ -340,15 +347,19 @@ Where the design above left a choice open, the simplest option was taken:
 |---|---|
 | `use` | 500 |
 | `timing: exclude: harp_evenly_spaced` (Harp clock steps) | 56 |
-| `quality: exclude: pct_clipped_high median <= 3.75` (side) | 33 (+3 also timing-excluded) |
+| `quality: exclude: pct_clipped_high median <= 3.75` (side) | 33 (3 more are timing-excluded first) |
 | `timing: exclude: trigger_log_count` | 8 |
 | `quality: exclude: sharpness_dev <= 0.45` (820688 2026-01-27, IR off at the start) | 2 |
 | `quality: exclude: similarity p5 < 0.998` (816212 2025-12-23 bottom) | 1 |
 | `timing: exclude: clock_rates_agree` (816212 2025-12-24 bottom, −70%, 199k frames lost) | 1 |
-| `error: Video CSV has missing values` (808057 2025-09-03 side) | 1 |
+| `timing: exclude: unreadable` (808057 2025-09-03 side: CSV has missing values) | 1 |
 
-- **Quality:** verdicts identical to the revision 8 survey on all 601 cameras measured (562 use,
-  36 clipping, 2 IR off, 1 not looking at the mouse); sharpness, mean and clipping medians
+Totals: 602 = 500 use + 102 excluded. Timing excludes 66 (56 + 8 + 1 + 1), quality 39 (36 + 2 +
+1), both 3 (side cameras that also clip: 818586 2026-01-16, 809487 2025-10-07, 809491
+2025-11-13); `reason` names timing first. No errors after the re-runs.
+
+- **Quality:** verdicts identical to the revision 8 survey on all 602 cameras (563 use, 36
+  clipping, 2 IR off, 1 not looking at the mouse); sharpness, mean and clipping medians
   identical. `similarity_p5` changed on 601 cameras (max 0.089) from the all-samples
   reference, and no camera crossed 0.7 or 0.998: **the similarity cutoffs hold under the
   all-samples reference** (pending since revision 8). One camera has `similarity_p5` in
@@ -363,6 +374,4 @@ Where the design above left a choice open, the simplest option was taken:
 - **Not checked:** `me_dry_run_fip.csv` (97 sessions: 178 use, 16 exclude) is not on this
   machine, so the per-session comparison was not done.
 - **Open:** whether a trigger log with exactly one event past the last exposure (a frame lost
-  after the last saved row) should be accepted instead of excluded (6 cameras);
-  808057 2025-09-03 side stays `error:` and is re-screened on every run (an override can settle
-  it).
+  after the last saved row) should be accepted instead of excluded (6 cameras).
