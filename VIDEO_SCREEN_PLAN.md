@@ -1,8 +1,9 @@
 # Plan: video screening before analysis (Phase 3 of video timing + quality QC)
 
 > **Status (2026-10-02): Part A merged (PR #9). Part B in progress on `feat/video-screen`:
-> steps 1–4 done (timing module, quality renames, `video_screen`, survey script and docs);
-> verification next.** Decisions so far are dated in place. Background:
+> steps 1–4 done (timing module, quality renames, `video_screen`, survey script and docs)
+> and verified (see "Verification: results"). Branch pushed; PR not opened yet. Step 5
+> (`run_batch_analysis(screen=...)`, optional) not done.** Decisions so far are dated in place. Background:
 > `VIDEO_QUALITY_QC_PLAN.md` (revisions 1–8) and `VIDEO_TIMING_QC_PLAN.md`.
 
 ## Context
@@ -317,3 +318,51 @@ Where the design above left a choice open, the simplest option was taken:
   `me_dry_run_fip.csv` on its 97 sessions (178 use, 16 exclude), plus the 56 clock-step cameras
   excluded across all 301.
 - Then open the PR from `feat/video-screen` to `main`.
+
+## Verification: results (2026-10-02)
+
+- **Unit tests:** 102 tests pass (`tests/test_video_screen.py`: 17; timing: 29). 100% line
+  coverage of `video_screen.py`, `video_timing_qc.py`, `video_quality_qc.py` and
+  `video_quality_report.py`; black, isort and flake8 clean on every touched file (the legacy
+  `kinematics/tongue_kinematics_utils.py`, one line changed, keeps its existing flake8 findings).
+  Every existing timing test keeps its outcome; each now asserts the old action (deprecated
+  alias, with its warning), the new verdict and the correction method.
+- **Local vs URL inputs** (`behavior_800886_2025-08-18_13-14-52`, MP4 over HTTPS in both): every
+  column identical except float formatting in the last digit (CSV round trip, ~1e-16).
+- **Full re-run** of the 301 curated FIP sessions (602 cameras) through `screen_sessions` into
+  `video_quality_qc_data/screen_fip/`: 2 h 40 min with 8 workers (network-bound: about 155 s per
+  camera against 65 s in the 2026-10-01 survey, CPU mostly idle). 17 cameras hit transient
+  network errors (a DNS outage, 2 read timeouts); a second run screened only those, as designed.
+  One camera's session JSON fetch failed in the same outage and silently fell back to the middle
+  50% window; fixed (the JSON is now downloaded first, so that is an error) and re-screened.
+
+| Result | Cameras |
+|---|---|
+| `use` | 500 |
+| `timing: exclude: harp_evenly_spaced` (Harp clock steps) | 56 |
+| `quality: exclude: pct_clipped_high median <= 3.75` (side) | 33 (+3 also timing-excluded) |
+| `timing: exclude: trigger_log_count` | 8 |
+| `quality: exclude: sharpness_dev <= 0.45` (820688 2026-01-27, IR off at the start) | 2 |
+| `quality: exclude: similarity p5 < 0.998` (816212 2025-12-23 bottom) | 1 |
+| `timing: exclude: clock_rates_agree` (816212 2025-12-24 bottom, −70%, 199k frames lost) | 1 |
+| `error: Video CSV has missing values` (808057 2025-09-03 side) | 1 |
+
+- **Quality:** verdicts identical to the revision 8 survey on all 601 cameras measured (562 use,
+  36 clipping, 2 IR off, 1 not looking at the mouse); sharpness, mean and clipping medians
+  identical. `similarity_p5` changed on 601 cameras (max 0.089) from the all-samples
+  reference, and no camera crossed 0.7 or 0.998: **the similarity cutoffs hold under the
+  all-samples reference** (pending since revision 8). One camera has `similarity_p5` in
+  [0.99, 0.998).
+- **Timing:** 56 clock-step cameras, as expected. 8 `trigger_log_count`: 6 cameras with
+  exactly one event more than the frame numbers span, all with heavy frame loss (168k–333k
+  frames), and 818586 2026-01-16 (both cameras, +1326/+1328 events, no frames lost). The old
+  code refused all 9 of these extra cameras too (`correct_video_timing` raised on the trigger log
+  count; `clock_rates_agree` was always required). No video frame count differs from its CSV
+  (0 of 601). Trigger log used on 601 cameras. Methods: 392 as written, 52 fix glitches, 92
+  re-index.
+- **Not checked:** `me_dry_run_fip.csv` (97 sessions: 178 use, 16 exclude) is not on this
+  machine, so the per-session comparison was not done.
+- **Open:** whether a trigger log with exactly one event past the last exposure (a frame lost
+  after the last saved row) should be accepted instead of excluded (6 cameras);
+  808057 2025-09-03 side stays `error:` and is re-screened on every run (an override can settle
+  it).
