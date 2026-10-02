@@ -10,6 +10,7 @@ import json
 import shutil
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -176,6 +177,15 @@ class ScreenCameraTest(ScreenTest):
         self.assertFalse(row["use"])
         self.assertTrue(row["reason"].startswith("error: "))
         self.assertIsNone(row["timing"])
+
+    def test_unreachable_json_is_an_error(self):
+        """A session JSON URL that cannot be fetched is an error (screened
+        again next time), not a silent fallback to the middle 50%."""
+        failure = urllib.error.URLError("nodename nor servname")
+        with mock.patch("urllib.request.urlopen", side_effect=failure):
+            row = self.screen({**self.clean, "behavior_json": URL + "s.json"})
+        self.assertTrue(row["reason"].startswith("error: URLError"))
+        self.assertIsNone(row["window"])
 
     def test_quality_off(self):
         """Timing alone decides; no quality columns."""

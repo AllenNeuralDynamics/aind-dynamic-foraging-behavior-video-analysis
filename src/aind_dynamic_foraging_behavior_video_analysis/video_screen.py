@@ -114,7 +114,8 @@ def _is_url(location):
 def _local(location, folder):
     """A local path for ``location``: itself, or for a URL a copy
     downloaded into ``folder`` (once per URL; the readers of video CSVs
-    and trigger logs need local files)."""
+    and trigger logs need local files, and a session JSON that cannot be
+    fetched must be an error rather than a fallback window)."""
     if not _is_url(location):
         return Path(location)
     digest = hashlib.sha1(str(location).encode()).hexdigest()[:12]
@@ -234,6 +235,10 @@ def _screen_camera(
     session_out = None if out_dir is None else Path(out_dir) / str(session)
     try:
         csv = _local(video_csv, tmp)
+        if behavior_json is not None:
+            # Downloaded here so a network failure is an error, not a
+            # fallback window.
+            behavior_json = _local(behavior_json, tmp)
         timing, log_path = _screen_timing(
             mp4, csv, trigger_log, tmp, session_out, camera
         )

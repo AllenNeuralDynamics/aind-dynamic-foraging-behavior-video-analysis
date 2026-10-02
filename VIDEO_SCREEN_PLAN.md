@@ -261,6 +261,10 @@ Where the design above left a choice open, the simplest option was taken:
   columns stay empty.
 - **Frame count** comes from the MP4 index (`read_mp4_frame_index(mp4).n_samples`), read once
   for timing and again by quality sampling.
+- **Session JSON given as a URL is downloaded first**, like the CSV and the log, so a network
+  failure is an `error:` row (screened again) rather than a silent "middle 50%" window. Found in
+  the full run: one camera's JSON fetch failed on a DNS outage and fell back to the middle of the
+  file (2026-10-02).
 - **Trigger log column** is a boolean: True when a log was given and readable.
 - **Version 0.2.0.** `__version__` is 0.2.0 in this branch (the release comes with this PR,
   decided 2026-10-02 for Part A); README "Changes" says "0.2.0 (unreleased)". The screen's
