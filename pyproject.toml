@@ -20,7 +20,8 @@ dynamic = ["version"]
 
 # Core is what video_alignment and tongue_lickometer_utils need, so
 # consumers that only align timebases stay light. Everything else
-# (kinematics, ephys, NWB, video clips) is in the `kinematics` extra.
+# (kinematics, ephys, NWB, video clips) is in the `kinematics` extra;
+# video quality QC is in the `video-qc` extra.
 dependencies = [
     'numpy',
     'pandas'
@@ -39,6 +40,15 @@ kinematics = [
     'requests',
     'scipy',
     'seaborn'
+]
+# video_quality_qc and video_quality_report. aind-video-utils is pinned:
+# its exposure statistics define our metrics. Its probe() calls the
+# system ffprobe, so ffmpeg must be on PATH.
+video-qc = [
+    'aind-video-utils==0.7.0',
+    'av',
+    'matplotlib',
+    'pyarrow'
 ]
 dev = [
     'black',

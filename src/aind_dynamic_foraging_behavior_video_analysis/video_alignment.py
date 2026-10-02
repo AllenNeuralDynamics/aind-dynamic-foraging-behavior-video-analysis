@@ -1,18 +1,18 @@
-"""Standalone helpers for aligning behavior video frames to behavior/session time.
+"""Helpers for aligning behavior video frames to behavior/session time.
 
-This module is intentionally dependency-light (``pandas`` only) and decoupled from
-the kinematics pipeline so it can be reused on its own. It answers a single
-question: given the behavior video acquisition CSV and the time of the first go
-cue, how do you convert event times from other data streams (spikes, fiber
-photometry, behavior events) into seconds within the recorded video so you can
-clip around them?
+This module is intentionally dependency-light (``numpy`` and ``pandas``) and
+decoupled from the kinematics pipeline so it can be reused on its own. It
+answers a single question: given the behavior video acquisition CSV and the
+time of the first go cue, how do you convert event times from other data
+streams (spikes, fiber photometry, behavior events) into seconds within the
+recorded video so you can clip around them?
 
 Three clocks are used throughout, with fixed names:
 
 ``behavior_time``
     Harp / reference time -- absolute acquisition seconds. The video CSV
-    ``Behav_Time`` column, NWB ``goCue_start_time``, spike times and FIP times all
-    live on this clock.
+    ``Behav_Time`` column, NWB ``goCue_start_time``, spike times and FIP
+    times all live on this clock.
 ``video_time``
     Seconds within the recorded video file (first frame = 0.0). This is what
     ``ffmpeg -ss`` expects.
@@ -20,13 +20,17 @@ Three clocks are used throughout, with fixed names:
     Seconds relative to the first go cue (first go cue = 0.0).
 
 Let ``first_frame_behavior_time`` be the ``behavior_time`` of the first video
-frame and ``first_go_cue_time`` be the ``behavior_time`` of the first go cue. The
-core relationships are::
+frame and ``first_go_cue_time`` be the ``behavior_time`` of the first go
+cue. The core relationships are::
 
-    offset       = first_go_cue_time - first_frame_behavior_time   # video_time of the 1st go cue
-    video_time   = behavior_time     - first_frame_behavior_time   # behavior_time event -> video_time
-    video_time   = session_time      + offset                      # session_time event  -> video_time
-    session_time = behavior_time     - first_go_cue_time           # behavior_time        -> session_time
+    # video_time of the 1st go cue
+    offset       = first_go_cue_time - first_frame_behavior_time
+    # behavior_time event -> video_time
+    video_time   = behavior_time     - first_frame_behavior_time
+    # session_time event -> video_time
+    video_time   = session_time      + offset
+    # behavior_time -> session_time
+    session_time = behavior_time     - first_go_cue_time
 
 Caveat: dropped frames
 ----------------------
@@ -38,18 +42,31 @@ time with :mod:`video_timing_qc`, map events to frames with
 ``numpy.searchsorted`` on the corrected ``harp_time`` instead of by
 subtraction.
 
+Trial times
+-----------
+:func:`read_trial_times` reads trial start, go cue and trial end straight
+from the raw session JSON (``behavior/<subject>_<datetime>.json``), the
+same Harp-clock values ``TransferToNWB.bonsai_to_nwb`` writes into the NWB
+trials table, so no NWB is needed. :func:`behavior_time_to_frame_index`
+puts behavior times on video frames through a corrected timing table.
+:func:`task_frame_window` combines them: the frames from the first trial
+start to the last trial end.
+
 Example
 -------
-First frame at ``behavior_time`` 100.0 s, first go cue at 105.25 s, and a spike of
-interest at 112.0 s::
+First frame at ``behavior_time`` 100.0 s, first go cue at 105.25 s, and a
+spike of interest at 112.0 s::
 
-    >>> offset = compute_video_session_offset("metadata.csv", 105.25)  # -> 5.25
-    >>> behavior_time_to_video_time(112.0, 100.0)                       # -> 12.0
-    >>> session_time_to_video_time(6.75, offset)                        # -> 12.0
+    >>> compute_video_session_offset("metadata.csv", 105.25)  # -> 5.25
+    >>> behavior_time_to_video_time(112.0, 100.0)  # -> 12.0
+    >>> session_time_to_video_time(6.75, 5.25)  # -> 12.0
 """
 
+import json
+import urllib.request
 from typing import List, Optional
 
+import numpy as np
 import pandas as pd
 
 # Column layout of the Bonsai / AIND behavior video acquisition CSV. Two
@@ -205,9 +222,10 @@ def compute_video_session_offset(
 ) -> float:
     """Return the offset between session_time and video_time.
 
-    The offset is ``first_go_cue_time - first_frame_behavior_time`` -- equivalently,
-    the ``video_time`` (seconds into the video) at which the first go cue occurs.
-    Add it to a ``session_time`` to get a ``video_time``; subtract it to go back.
+    The offset is ``first_go_cue_time - first_frame_behavior_time`` --
+    equivalently, the ``video_time`` (seconds into the video) at which the
+    first go cue occurs. Add it to a ``session_time`` to get a
+    ``video_time``; subtract it to go back.
 
     Parameters
     ----------
@@ -215,8 +233,8 @@ def compute_video_session_offset(
         Path to the behavior video acquisition CSV.
     first_go_cue_time : float
         The behavior_time of the first go cue (e.g.
-        ``float(nwb.trials["goCue_start_time"][0])``). Passed as a plain float so
-        this module stays independent of any NWB / pynwb dependency.
+        ``float(nwb.trials["goCue_start_time"][0])``). Passed as a plain
+        float so this module stays independent of any NWB / pynwb dependency.
     time_column : str, optional
         Name of the behavior_time column in the CSV. Defaults to
         auto-detection via :func:`_resolve_time_column`.
@@ -274,8 +292,9 @@ def video_time_to_session_time(video_times, offset):
 def behavior_time_to_video_time(behavior_times, first_frame_behavior_time):
     """Convert behavior_time (harp) to video_time.
 
-    Use this for events already on the raw behavior clock (e.g. spike or FIP times
-    pulled straight from NWB) so you do not have to re-zero them to the go cue.
+    Use this for events already on the raw behavior clock (e.g. spike or
+    FIP times pulled straight from NWB) so you do not have to re-zero them
+    to the go cue.
 
     Parameters
     ----------
@@ -310,3 +329,151 @@ def video_time_to_behavior_time(video_times, first_frame_behavior_time):
         ``video_times + first_frame_behavior_time``.
     """
     return video_times + first_frame_behavior_time
+
+
+def read_trial_times(behavior_json_path) -> pd.DataFrame:
+    """Read per-trial Harp times from the raw foraging session JSON.
+
+    Uses the fields ``TransferToNWB.bonsai_to_nwb`` copies into the NWB
+    trials table, so the values equal the NWB's ``start_time``,
+    ``goCue_start_time`` and ``stop_time``: ``B_TrialStartTimeHarp``,
+    ``B_TrialEndTimeHarp``, and ``B_GoCueTimeHarp`` (older files) or
+    ``B_GoCueTimeSoundCard``.
+
+    Parameters
+    ----------
+    behavior_json_path : str or pathlib.Path
+        Local path or http(s) URL of ``behavior/<subject>_<datetime>.json``.
+
+    Returns
+    -------
+    pandas.DataFrame
+        One row per trial: ``start_time``, ``goCue_start_time``,
+        ``stop_time`` (Harp seconds, the behavior_time clock).
+
+    Raises
+    ------
+    ValueError
+        If the file has no Harp trial times (older sessions recorded CPU
+        times only, which are not on the video's clock).
+    """
+    path = str(behavior_json_path)
+    if path.startswith(("http://", "https://")):
+        with urllib.request.urlopen(path) as response:
+            obj = json.load(response)
+    else:
+        with open(path) as f:
+            obj = json.load(f)
+    if not obj.get("B_TrialEndTimeHarp"):
+        raise ValueError(f"No Harp trial times in {behavior_json_path}")
+    go_cue_field = (
+        "B_GoCueTimeHarp"
+        if "B_GoCueTimeHarp" in obj
+        else "B_GoCueTimeSoundCard"
+    )
+    n_trials = len(obj["B_TrialEndTime"])
+    return pd.DataFrame(
+        {
+            "start_time": obj["B_TrialStartTimeHarp"][:n_trials],
+            "goCue_start_time": obj[go_cue_field][:n_trials],
+            "stop_time": obj["B_TrialEndTimeHarp"][:n_trials],
+        },
+        dtype="float64",
+    )
+
+
+def behavior_time_to_frame_index(behavior_times, harp_time):
+    """Return the first video frame at or after each behavior time.
+
+    Parameters
+    ----------
+    behavior_times : float or array-like
+        Harp (behavior_time) seconds.
+    harp_time : array-like
+        Harp time of every video frame, increasing: the ``harp_time``
+        column of ``video_timing_qc.correct_video_timing``. Do not use the
+        raw CSV column when frames were dropped; its rows carry the times
+        of earlier triggers (see the module docstring).
+
+    Returns
+    -------
+    numpy.ndarray or int
+        Frame indices (= CSV rows); ``len(harp_time)`` for a time after the
+        last frame.
+    """
+    return np.searchsorted(np.asarray(harp_time), behavior_times, side="left")
+
+
+def task_frame_window(behavior_json, video_csv, trigger_log=None):
+    """Return the frames from the first trial start to the last trial end.
+
+    Trial times come from the raw session JSON (:func:`read_trial_times`).
+    They are put on frames through the Harp time of each CSV row, found the
+    way the kinematics pipeline finds it: the timing QC correction
+    (``video_timing_qc.correct_video_timing``), with the trigger log when
+    one is given and readable (an unreadable log is ignored).
+
+    The correction is strict because per-frame analysis needs every frame's
+    time; it refuses a camera for errors of a frame or two (a Harp step off
+    by more than half a frame, a log one event longer than the frame
+    numbers span: 65 of 602 cameras in the survey of
+    ``VIDEO_QUALITY_QC_PLAN.md``). The window only needs to be right to a
+    few frames, so when the correction refuses, it falls back to:
+
+    1. the trigger log by frame number, ``log[frame_number -
+       first_frame_number]`` (clipped to the log), right whether or not
+       frames were lost;
+    2. the raw Harp column, when no frames were lost (row ``n`` is then
+       trigger ``n``).
+
+    A running maximum is applied so a glitch cannot reorder the times.
+
+    Parameters
+    ----------
+    behavior_json : str or pathlib.Path
+        ``behavior/<subject>_<datetime>.json`` (path or URL).
+    video_csv : str or pathlib.Path
+        The camera's video CSV (local), either layout.
+    trigger_log : str or pathlib.Path, optional
+        ``behavior/raw.harp/BehaviorEvents/Event_94.bin``.
+
+    Returns
+    -------
+    (start, end)
+        ``[start, end)`` video frame indices (= CSV rows).
+
+    Raises
+    ------
+    ValueError
+        If the JSON has no Harp trial times, or the correction is refused,
+        frames were lost and there is no readable trigger log.
+    """
+    # video_timing_qc imports this module.
+    from aind_dynamic_foraging_behavior_video_analysis import (
+        video_timing_qc as vtq,
+    )
+
+    trials = read_trial_times(behavior_json)
+    timing = vtq.load_video_timing(video_csv)
+    log = None
+    if trigger_log is not None:
+        try:
+            log = vtq.read_harp_trigger_log(trigger_log)
+        except (ValueError, OSError):
+            pass
+    try:
+        harp = vtq.correct_video_timing(timing, trigger_times=log)
+        harp = harp["harp_time"].to_numpy()
+    except ValueError:
+        if log is not None:
+            exposure = timing["frame_number"].to_numpy()
+            harp = log[np.clip(exposure - exposure[0], 0, len(log) - 1)]
+        else:
+            checks = vtq.check_video_timing(timing).set_index("check")
+            if checks.loc["no_frames_lost", "passed"] is not True:
+                raise
+            harp = timing["harp_time_raw"].to_numpy()
+    harp = np.maximum.accumulate(harp)
+    start = behavior_time_to_frame_index(trials["start_time"].min(), harp)
+    end = behavior_time_to_frame_index(trials["stop_time"].max(), harp)
+    return int(start), int(end)

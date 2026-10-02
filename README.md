@@ -18,7 +18,8 @@ One test: **would another AIND project doing tongue kinematics want this, unchan
   `tongue_quality_stats.json`), runs in the batch pipeline, or is generic to
   tongue-kinematics sessions — keypoint I/O and filtering, segmentation,
   aggregation, trial/lick annotation, QC stats, lick detection, video/NWB
-  lookup, video timing QC, clip extraction, raster/PSTH primitives. It must
+  lookup, video timing and quality QC, clip extraction, raster/PSTH
+  primitives. It must
   stay stable: consuming capsules pin a commit and move the pin deliberately.
 - **Not here:** analysis built *on top of* the intermediates for one
   scientific question — encoding models, per-unit result registries, spatial
@@ -64,7 +65,92 @@ in `VIDEO_TIMING_QC_PLAN.md`; `examples/video_timing_qc_validation.ipynb`
 shows it on real sessions against the trigger log.
 
 
+## Video quality QC
+
+`video_quality_qc` measures image quality on about 100 keyframes spread
+across a behavior-video MP4 and says whether to use the video. Only the
+sampled keyframes are decoded (a few seconds locally, about 30-45 s per
+camera over HTTPS). Every metric is saved per keyframe: brightness and
+exposure statistics, contrast, entropy, clipping at the tagged range,
+sharpness (Laplacian variance, 2× downsampled), noise, similarity to a
+reference frame, and shift from it (reported only). Plain functions: frames
+are a uint8 array, samples a pandas table, and checks are rows of the
+`CHECKS` table. Needs the `video-qc` extra and `ffprobe` on `PATH`.
+
+```python
+from aind_dynamic_foraging_behavior_video_analysis import video_quality_qc as vqq
+from aind_dynamic_foraging_behavior_video_analysis import video_quality_report as vqr
+
+# All in one: the task window (first trial start to last trial end, from the
+# session JSON and the camera's CSV; the middle 50% of the file if that
+# fails), keyframes, metrics, checks.
+frames, samples, checks, note = vqq.video_quality(
+    "behavior-videos/bottom_camera.mp4", "bottom_camera",
+    behavior_json="behavior/<subject>_<datetime>.json",
+    video_csv="behavior-videos/bottom_camera.csv",
+    trigger_log="behavior/raw.harp/BehaviorEvents/Event_94.bin",
+)
+vqq.quality_action(checks)   # "use" or "exclude: <check>"
+vqq.write_video_quality(samples, checks, "results/", "bottom_camera", note)
+vqr.session_card(frames, samples, checks, "<session>  bottom_camera")
+
+# Or step by step:
+window, note = vqq.sample_window(behavior_json, video_csv, trigger_log)
+frames, samples, color_range = vqq.sample_keyframes(mp4, window)
+samples = vqq.measure(frames, samples, color_range)
+checks = vqq.run_checks(samples, camera)
+```
+
+Checks (`CHECKS`; values set on a survey of 301 FIP sessions, 602 cameras):
+
+| Check | Fails when |
+|---|---|
+| `sharpness_dev <= 0.45` | two consecutive samples are more than 45% off the median sharpness |
+| `mean_dev <= 0.15` | two consecutive samples are more than 15% off the median brightness |
+| `similarity >= 0.7` | two consecutive samples correlate below 0.7 with the reference |
+| `similarity p5 < 0.998` | nothing in view moves (a camera pointed away from the mouse) |
+| `mean median >= 50`, `mean median <= 150` | the session's median brightness is too dark or too bright |
+| `pct_clipped_high median <= 3.75` | side cameras only: the jaw, mouth and paws saturate |
+
+One sample alone out of range is listed but passes (a paw in front of the
+lens). The brightness limits are wide (survey medians 55–105, so none
+excluded); level cutoffs on sharpness and contrast are not used: across
+sessions they track the scene (background, rig) more than quality.
+A dirty bottom mirror is not detected by any check.
+
+The recording often runs past the session (and starts before it), which
+fails the stability checks, so the task is sampled.
+`video_alignment.task_frame_window` places it: trial times from the raw
+session JSON (the same values as the NWB trials table, so no NWB is
+needed), put on frames by the same timing QC correction the kinematics
+pipeline uses (with the trigger log when present). Where that strict
+correction refuses a camera for an error of a frame or two, the window falls
+back to the trigger log by frame number, else the raw Harp column when no
+frames were lost. The reference for `similarity` and `shift` is the
+pixel-wise median of all samples, the session's typical view.
+
+Outputs per camera: `video_quality_<camera>.parquet` (every metric per
+keyframe, with histograms) and `video_quality_<camera>.json` (window note,
+versions, checks, action). Survey outputs written before revision 8
+(`video_quality_qc_data/survey_fip/`) use the older names:
+`..._samples.parquet`, summary fields (`sharpness_med`, ...) and check names
+(`sharpness_stable`, `brightness_stable`, `scene_stable`, and level checks
+recorded as skipped; `scene_moves` and the clipping cutoff came later). Design, evidence and limits: `VIDEO_QUALITY_QC_PLAN.md`;
+`examples/video_quality_qc_validation.ipynb` runs it on a public session;
+`scripts/video_quality_survey.py` runs it on many.
+
+
 ## Changes
+
+### Unreleased
+
+- **New:** `video_alignment.read_trial_times` (trial start, go cue and end
+  from the raw session JSON, as in the NWB),
+  `video_alignment.behavior_time_to_frame_index` and
+  `video_alignment.task_frame_window`.
+- **New:** `video_quality_qc` and `video_quality_report` (see above), in a
+  new `video-qc` extra (`aind-video-utils==0.7.0`, `av`, `matplotlib`,
+  `pyarrow`). Nothing existing changes.
 
 ### 0.1.0 (2026-09-30)
 
@@ -113,9 +199,15 @@ video-clip modules, install the `kinematics` extra:
 pip install -e ".[kinematics]"
 ```
 
+For video quality QC, install the `video-qc` extra (it also needs
+`ffmpeg`/`ffprobe` on `PATH`):
+```bash
+pip install -e ".[video-qc]"
+```
+
 To develop the code, run
 ```bash
-pip install -e ".[kinematics,dev]"
+pip install -e ".[kinematics,video-qc,dev]"
 ```
 
 ## Contributing
