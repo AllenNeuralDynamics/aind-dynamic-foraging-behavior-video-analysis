@@ -1,6 +1,11 @@
 # Plan: `video_timing_qc` — QC and correction of behavior-video timestamps
 
 > Status: revision 5 (2026-09-30). Phases 1–3 done; released as 0.1.0; Phase 4 not started.
+> **2026-10-02:** the module's verdict (`timing_verdict`: `use` or `exclude: <check>`, final from
+> `check_video_timing`, which now includes the trigger log, the re-index trial and the frame
+> count), `write_video_timing`, and screening before analysis are planned and tracked in
+> `VIDEO_SCREEN_PLAN.md`; `timing_action` is deprecated. Where they disagree,
+> `VIDEO_SCREEN_PLAN.md` wins.
 > Written so a new contributor or agent can pick it up without the
 > conversation that produced it; the evidence behind each decision is in "Background" and
 > "Findings".

@@ -1,7 +1,8 @@
 # Plan: video screening before analysis (Phase 3 of video timing + quality QC)
 
 > **Status (2026-10-02): Part A merged (PR #9). Part B in progress on `feat/video-screen`:
-> steps 1 (symmetric timing module), 2 (quality renames) and 3 (`video_screen`) done.** Decisions so far are dated in place. Background:
+> steps 1–4 done (timing module, quality renames, `video_screen`, survey script and docs);
+> verification next.** Decisions so far are dated in place. Background:
 > `VIDEO_QUALITY_QC_PLAN.md` (revisions 1–8) and `VIDEO_TIMING_QC_PLAN.md`.
 
 ## Context
@@ -261,6 +262,14 @@ Where the design above left a choice open, the simplest option was taken:
 - **Frame count** comes from the MP4 index (`read_mp4_frame_index(mp4).n_samples`), read once
   for timing and again by quality sampling.
 - **Trigger log column** is a boolean: True when a log was given and readable.
+- **Version 0.2.0.** `__version__` is 0.2.0 in this branch (the release comes with this PR,
+  decided 2026-10-02 for Part A); README "Changes" says "0.2.0 (unreleased)". The screen's
+  cache key includes it.
+- **Survey script.** Lists sessions in parallel threads, builds all-URL inputs, and calls
+  `screen_sessions(..., cards=True)`. The thumbnails and contact sheets are gone (the session
+  card already shows 8 evenly spaced frames); `--report` is the index plus every card. Its
+  output folder is the screen's (`video_screen.csv`, not `summary.csv`). matplotlib's `Agg`
+  backend is selected in `main()` so the imports stay at the top.
 
 ## Steps (commits)
 

@@ -51,10 +51,20 @@ from aind_dynamic_foraging_behavior_video_analysis import video_timing_qc as vtq
 
 timing = vtq.load_video_timing("behavior-videos/bottom_camera.csv")  # either layout
 checks = vtq.check_video_timing(timing)   # one row per check: passed, count, message, rows
-vtq.timing_action(checks)                 # use harp as written / fix glitches / re-index / refuse: <check>
-fixed = vtq.correct_video_timing(timing)  # adds harp_time and harp_source; raises if refused
-fixed = vtq.correct_video_timing(timing, trigger_times=vtq.read_harp_trigger_log("Event_94.bin"))
+vtq.timing_verdict(checks)                # "use" or "exclude: <check>"
+fixed = vtq.correct_video_timing(timing)  # adds harp_time and harp_source; raises if excluded
+log = vtq.read_harp_trigger_log("Event_94.bin")
+checks = vtq.check_video_timing(timing, trigger_times=log, video_frame_count=n_frames)
+fixed = vtq.correct_video_timing(timing, trigger_times=log)
+vtq.write_video_timing(checks, "results/", "bottom_camera")  # video_timing_bottom_camera.json
 ```
+
+The verdict is final from the checks table: with a trigger log it includes
+whether the log has one event per exposure and matches the CSV, when frames
+were lost whether the re-indexed times match the camera, and with a frame
+count whether the video has one frame per CSV row. How the times are
+corrected (as written, fixing glitches, or re-indexing) is decided inside
+`correct_video_timing`.
 
 The LP pipeline (`integrate_keypoints_with_video_time`, `generate_tongue_dfs`,
 `run_batch_analysis`) uses it: keypoint `time_raw` is the corrected Harp time,
@@ -131,7 +141,7 @@ pixel-wise median of all samples, the session's typical view.
 
 Outputs per camera: `video_quality_<camera>.parquet` (every metric per
 keyframe, with histograms) and `video_quality_<camera>.json` (window note,
-versions, checks, action). Survey outputs written before revision 8
+versions, checks, verdict). Survey outputs written before revision 8
 (`video_quality_qc_data/survey_fip/`) use the older names:
 `..._samples.parquet`, summary fields (`sharpness_med`, ...) and check names
 (`sharpness_stable`, `brightness_stable`, `scene_stable`, and level checks
@@ -140,10 +150,71 @@ recorded as skipped; `scene_moves` and the clipping cutoff came later). Design, 
 `scripts/video_quality_survey.py` runs it on many.
 
 
+## Video screening
+
+`video_screen` runs timing QC and quality QC on each camera, upstream of any
+analysis (pose estimation, motion energy, `run_batch_analysis`), and gives
+one row per session × camera: `use` (both verdicts `use`) and `reason`
+(`timing: exclude: <check>`, `quality: exclude: <check>`, or `error: ...`
+for a camera that could not be screened, which is screened again next time).
+The caller passes each file as a local path (e.g. a Code Ocean data asset)
+or an HTTPS URL; the module never searches for files. Nothing is written
+unless `out_dir` is given.
+
+```python
+from aind_dynamic_foraging_behavior_video_analysis import video_screen as vs
+
+# up front: one row per session x camera, paths or URLs, built however suits the caller
+inputs = pd.DataFrame([{
+    "session": s, "camera": "bottom_camera",
+    "mp4": f"/root/capsule/data/{s}/behavior-videos/bottom_camera.mp4",        # or an https URL
+    "video_csv": f"/root/capsule/data/{s}/behavior-videos/bottom_camera.csv",
+    "behavior_json": ..., "trigger_log": ...,                                  # optional
+} for s in sessions])
+screen = vs.screen_sessions(inputs, out_dir="/root/capsule/results/screen", workers=8)
+
+# later, in any analysis
+screen = vs.load_screen("screen/video_screen.csv")
+for session in screen.query("view == 'bottom' and use").session: ...
+
+# or as a gate inside an existing loop, nothing written
+row = vs.screen_camera(session, camera, mp4, video_csv, behavior_json, trigger_log)
+```
+
+With `out_dir`, `screen_sessions` appends to `video_screen.jsonl` as each
+session finishes (an interrupted run resumes), rebuilds `video_screen.csv`,
+writes `video_timing_<camera>.json` and the quality files (and the session
+card with `cards=True`) under `<out_dir>/<session>/`, and skips cameras
+already screened by the same library versions. `quality=False` screens
+timing only. `load_screen` applies `screen_overrides.csv` beside the table
+(`session, camera, verdict, note, reviewer, date`), so a camera can be kept
+or dropped by hand with the reason recorded. Columns and decisions:
+`VIDEO_SCREEN_PLAN.md`. `scripts/video_quality_survey.py` builds the inputs
+from the public S3 bucket and screens many sessions.
+
+
 ## Changes
 
-### Unreleased
+### 0.2.0 (unreleased)
 
+- **New:** `video_screen` (see above): `screen_camera`, `screen_sessions`,
+  `load_screen`.
+- **New:** `video_timing_qc.timing_verdict` (`use` or `exclude: <check>`) and
+  `write_video_timing`. `check_video_timing` takes `trigger_times` and adds the
+  rows `trigger_log_count`, `trigger_log_matches_csv`, `harp_matches_camera`
+  (the re-index trial) and counts `video_frame_count` in the verdict.
+- **Same outcomes:** `correct_video_timing` follows the verdict and raises in
+  the same cases as before; every camera is used or refused as before
+  (`refuse: X` is now `exclude: X`). New is that the verdict also excludes a
+  video frame count that differs from the CSV, when a count is given.
+- **Deprecated:** `video_timing_qc.timing_action` (warns; same strings as
+  before); removed in a later release. `integrate_keypoints_with_video_time`
+  prints the verdict instead.
+- **Changed return value:** `video_timing_qc.check_session` has a `verdict`
+  column in place of `action`.
+- **Renamed (never released):** `video_quality_qc.run_checks` →
+  `check_video_quality`, `quality_action` → `quality_verdict`; the quality
+  record's `action` field → `verdict`.
 - **New:** `video_alignment.read_trial_times` (trial start, go cue and end
   from the raw session JSON, as in the NWB),
   `video_alignment.behavior_time_to_frame_index` and

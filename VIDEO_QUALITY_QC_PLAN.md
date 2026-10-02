@@ -9,6 +9,12 @@
 > the timing QC procedure first, and the reference frame is the median of all samples. Next:
 > re-run the survey to confirm the similarity cutoffs, then Phase 3.
 >
+> **Phase 3 (2026-10-02) is planned and tracked in `VIDEO_SCREEN_PLAN.md`**: screening (timing +
+> quality) upstream of every analysis, in a new `video_screen` module, instead of inside
+> `run_batch_analysis`. `run_checks` / `quality_action` are now `check_video_quality` /
+> `quality_verdict`; the survey re-run goes through the screen. Where they disagree,
+> `VIDEO_SCREEN_PLAN.md` wins.
+>
 > Revision 7 (2026-10-01): Phases 1–2 done. Surveys of 97, then all 301 curated FIP
 > sessions set the stability tolerances (sharpness 0.45, similarity 0.7); revision 7 records the
 > calibration decisions ("Decisions: calibration"): a `scene_moves` check, a side camera
@@ -785,7 +791,7 @@ a few hundred frames) from a textured pattern with a moving blob. Cases:
    sessions found, set stability tolerances and level thresholds per camera from the
    distributions, and record the evidence here. Decide from the data whether the dense keyframe
    pass is needed.
-3. **Integration.** `run_batch_analysis` records the quality action per camera next to the
+3. **Integration.** Superseded by `VIDEO_SCREEN_PLAN.md` (2026-10-02). Originally: `run_batch_analysis` records the quality action per camera next to the
    timing action, then excludes `exclude:` sessions (opt-in first, default after Phase 2's
    thresholds are in). Release note in the README "Changes".
 4. **Optional.** Offer the generic metric code to `aind-video-utils`. Write results as an
