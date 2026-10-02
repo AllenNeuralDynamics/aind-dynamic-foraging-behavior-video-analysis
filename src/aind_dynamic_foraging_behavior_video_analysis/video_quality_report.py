@@ -184,7 +184,7 @@ def session_card(frames, samples, checks, title):
         fig.add_subplot(top[0]),
         _clipping(reference_frame(frames), display_range),
         display_range,
-        "reference (median of first samples); "
+        "reference (median of all samples); "
         "clipped: blue ≤ floor, red ≥ ceiling",
     )
     thumbs = top[1].subgridspec(2, 4, wspace=0.03, hspace=0.18)

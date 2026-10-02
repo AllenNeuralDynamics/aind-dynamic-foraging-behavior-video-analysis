@@ -59,8 +59,6 @@ from aind_dynamic_foraging_behavior_video_analysis.video_alignment import (
 N_SAMPLES = 100
 # Never sample frame 0 (embedded metadata) or this fraction at each end.
 EDGE_FRACTION = 0.01
-# The reference frame is the pixel-wise median of the first samples.
-REFERENCE_SAMPLES = 10
 # Without a task window, sample this middle fraction of the file.
 FALLBACK_FRACTION = 0.5
 # FFmpeg options for URLs: give up on a stalled read after 60 s
@@ -181,9 +179,11 @@ def phase_shift(reference, image):
 
 
 def reference_frame(frames):
-    """Pixel-wise median of the first ``REFERENCE_SAMPLES`` frames, which
-    ignores a moving mouse."""
-    return np.median(frames[:REFERENCE_SAMPLES], axis=0).astype(np.uint8)
+    """Pixel-wise median of every sampled frame: the session's typical
+    view. It ignores a moving mouse, and anything present in less than half
+    the session (a dark start, an empty rig at the end), so those samples
+    read as dissimilar rather than the rest of the session."""
+    return np.round(np.median(frames, axis=0)).astype(np.uint8)
 
 
 # --- Pipeline ------------------------------------------------------------

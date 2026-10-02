@@ -30,6 +30,9 @@ from aind_dynamic_foraging_behavior_video_analysis import (  # noqa: E402
 from aind_dynamic_foraging_behavior_video_analysis import (  # noqa: E402
     video_quality_report as vqr,
 )
+from aind_dynamic_foraging_behavior_video_analysis import (  # noqa: E402
+    video_timing_qc as vtq,
+)
 from aind_dynamic_foraging_behavior_video_analysis.video_alignment import (  # noqa: E402,E501
     behavior_time_to_frame_index,
     read_trial_times,
@@ -484,6 +487,23 @@ class CheckTest(TempDirTest):
         _, checks = self.run_video("occluded", after(200, occlude))
         self.assertIn("similarity >= 0.7", check_names(checks, False))
 
+    def test_dark_start_flags_the_dark_samples(self):
+        """The reference is the typical frame of the whole session, so with
+        the first third dark (lights off) it is the dark samples that read
+        as dissimilar, not the normal rest of the session."""
+
+        def lights_off(i, y):
+            """Near-black sensor noise, no scene structure."""
+            if i >= 100:
+                return y
+            return 20 + np.random.default_rng(i).normal(0, 2, y.shape)
+
+        samples, checks = self.run_video("dark_start", lights_off)
+        row = checks.set_index("check").loc["similarity >= 0.7"]
+        dark = samples.index[samples["frame_index"] < 100].tolist()
+        self.assertFalse(row["passed"])
+        self.assertEqual(row["samples"], dark)
+
     def test_still_scene(self):
         """Every frame the same: only the "does anything move" check
         fails."""
@@ -572,24 +592,37 @@ class TaskWindowTest(TempDirTest):
         csv = write_video_csv(self.tmp / "drop.csv", 300, drop_at=100)
         self.assertEqual(task_frame_window(self.json, csv), (40, 259))
 
+    def test_correction_with_trigger_log_first(self):
+        """With a log, the timing QC correction runs with it, as in the
+        kinematics pipeline."""
+        csv = write_video_csv(self.tmp / "logged.csv", 300, drop_at=100)
+        log = self.tmp / "Event_94_ok.bin"
+        write_trigger_log(log, FIRST_HARP + np.arange(301) / FPS)
+        with mock.patch.object(
+            vtq, "correct_video_timing", wraps=vtq.correct_video_timing
+        ) as correct:
+            self.assertEqual(task_frame_window(self.json, csv, log), (40, 259))
+        self.assertIsNotNone(correct.call_args.kwargs["trigger_times"])
+
     def test_trigger_log_by_frame_number(self):
-        """A lost frame and a Harp clock step (correction refused): each
-        row takes its exposure's log time. The log goes first even when
-        the correction would work."""
+        """A lost frame and a Harp clock step: the correction refuses, so
+        each row takes its exposure's log time."""
         csv = write_video_csv(
             self.tmp / "both.csv", 300, harp_step_at=280, drop_at=100
         )
-        triggers = FIRST_HARP + np.arange(301) / FPS
+        triggers = FIRST_HARP + np.arange(302) / FPS  # one event too many
         triggers[281:] += 0.5  # the same clock step, in the log
         log = self.tmp / "Event_94_step.bin"
         write_trigger_log(log, triggers)
         self.assertEqual(task_frame_window(self.json, csv, log), (40, 259))
-        with mock.patch(
-            "aind_dynamic_foraging_behavior_video_analysis.video_timing_qc"
-            ".correct_video_timing"
-        ) as correct:
-            task_frame_window(self.json, csv, log)
-        correct.assert_not_called()
+
+    def test_unreadable_trigger_log_is_ignored(self):
+        """A corrupt or missing log: the CSV alone, as without a log."""
+        csv = write_video_csv(self.tmp / "nolog.csv", 300, drop_at=100)
+        corrupt = self.tmp / "Event_94_bad.bin"
+        corrupt.write_bytes(b"not thirteen-byte messages")
+        for log in (corrupt, self.tmp / "missing.bin"):
+            self.assertEqual(task_frame_window(self.json, csv, log), (40, 259))
 
     def test_raw_harp_without_lost_frames(self):
         """A clock step is refused by the correction; with no frames lost
