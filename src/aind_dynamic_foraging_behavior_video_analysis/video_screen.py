@@ -52,6 +52,7 @@ from __future__ import annotations
 import datetime
 import hashlib
 import json
+import multiprocessing
 import re
 import shutil
 import tempfile
@@ -501,7 +502,12 @@ def screen_sessions(
     )
     results = dict(done)
     if workers > 1 and len(groups) > 1:
-        with ProcessPoolExecutor(max_workers=workers) as pool:
+        # spawn, not Linux's default fork: forking a process with threads
+        # running (FFmpeg, BLAS) can deadlock the workers.
+        spawn = multiprocessing.get_context("spawn")
+        with ProcessPoolExecutor(
+            max_workers=workers, mp_context=spawn
+        ) as pool:
             futures = [
                 pool.submit(_screen_session, g, out_dir, quality, cards)
                 for g in groups

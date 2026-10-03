@@ -280,6 +280,9 @@ Where the design above left a choice open, the simplest option was taken:
   better fixed in `CHECKS` (for every similar camera, with evidence), and an analysis that needs
   a different choice can filter the table in its own code. Add back if reviewers need a shared
   record of decisions made by eye.
+- **Workers start with `spawn`** (2026-10-02): CI on Linux with Python 3.12 hung in the pool test
+  at `os.fork()` (the process already runs threads); `spawn` is the macOS default, and safe on
+  Linux (Code Ocean) too.
 - **Trigger log column** is a boolean: True when a log was given and readable.
 - **Version 0.2.0.** `__version__` is 0.2.0 in this branch (the release comes with this PR,
   decided 2026-10-02 for Part A); README "Changes" says "0.2.0 (unreleased)". The screen's
