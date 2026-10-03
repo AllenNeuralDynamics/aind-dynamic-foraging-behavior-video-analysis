@@ -14,7 +14,7 @@ import numpy as np
 from aind_video_utils import luma_range
 
 from aind_dynamic_foraging_behavior_video_analysis.video_quality_qc import (
-    quality_action,
+    quality_verdict,
     reference_frame,
 )
 
@@ -129,7 +129,7 @@ def _outliers(fig, spec, frames, samples, display_range):
 def session_card(frames, samples, checks, title):
     """One page summarizing a camera's quality, built for scanning by eye.
 
-    Header (action, headline medians); the reference frame with clipped
+    Header (verdict, headline medians); the reference frame with clipped
     pixels marked and 8 evenly spaced frames; a time course per per-sample
     check and the shift; the luma histogram; the outlier frames.
 
@@ -140,7 +140,7 @@ def session_card(frames, samples, checks, title):
     samples : pandas.DataFrame
         From ``video_quality_qc.measure``.
     checks : pandas.DataFrame
-        From ``video_quality_qc.run_checks``.
+        From ``video_quality_qc.check_video_quality``.
     title : str
         First line of the page, e.g. ``"<session>  <camera>  (task)"``.
 
@@ -149,13 +149,13 @@ def session_card(frames, samples, checks, title):
     matplotlib.figure.Figure
     """
     display_range = luma_range(8, samples["color_range"].iloc[0] == "pc")
-    action = quality_action(checks)
-    bold = {"weight": "bold", "color": PASS if action == "use" else FAIL}
+    verdict = quality_verdict(checks)
+    bold = {"weight": "bold", "color": PASS if verdict == "use" else FAIL}
     med = samples.median(numeric_only=True)
     fig = plt.figure(figsize=PAGE_SIZE, facecolor="white")
     for y, text, style in [
         (0.975, title, {"fontsize": 10, "color": "#0b0b0b"}),
-        (0.945, f"ACTION: {action}", {"fontsize": 11, **bold}),
+        (0.945, f"VERDICT: {verdict}", {"fontsize": 11, **bold}),
         (
             0.918,
             f"{len(samples)} keyframes · sharpness {med['sharpness']:.0f} · "

@@ -1,7 +1,9 @@
 # Plan: video screening before analysis (Phase 3 of video timing + quality QC)
 
-> **Status (2026-10-02): not started.** Part A (the video quality QC PR) is ready to open;
-> Part B (screening) starts after it merges. Decisions so far are dated in place. Background:
+> **Status (2026-10-02): Part A merged (PR #9). Part B in progress on `feat/video-screen`:
+> steps 1–4 done (timing module, quality renames, `video_screen`, survey script and docs)
+> and verified (see "Verification: results"). Branch pushed; PR not opened yet. Step 5
+> (`run_batch_analysis(screen=...)`, optional) not done.** Decisions so far are dated in place. Background:
 > `VIDEO_QUALITY_QC_PLAN.md` (revisions 1–8) and `VIDEO_TIMING_QC_PLAN.md`.
 
 ## Context
@@ -122,7 +124,8 @@ Both QC modules expose the same three steps, with parallel names and the same ve
   alias returning the old strings (`DeprecationWarning`); the library's own caller moves to
   `timing_verdict`. `run_checks` / `quality_action` were never released: renamed outright.
   `check_session` (timing) gets a `verdict` column in place of `action`.
-- **Screen row `use`** = both verdicts `use` (or a manual override).
+- **Screen row `use`** = both verdicts `use` (manual overrides removed 2026-10-02; see
+  "Decisions during implementation").
 - **`error: <text>`**: a camera that could not be screened (unreadable file, network). Not an
   exclusion; re-screened on the next run.
 
@@ -170,9 +173,9 @@ Callers build the inputs with whatever suits them: Code Ocean paths, the existin
    `video_screen.jsonl` appended per session (resumable), `video_screen.csv` rebuilt at the end,
    detail files under `<out_dir>/<session>/`; sessions already present with the same library
    version and no error are skipped, so the call doubles as a cache.
-5. **`load_screen(path) -> DataFrame`**: reads `video_screen.csv`, applies
-   `screen_overrides.csv` beside it if present (`session, camera, verdict, note, reviewer, date`;
-   an override replaces `use` and records `override_note`).
+5. **`load_screen(path) -> DataFrame`**: reads `video_screen.csv`. (Planned with a
+   `screen_overrides.csv` for manual verdicts; removed 2026-10-02, see "Decisions during
+   implementation".)
 
 ### The table (`video_screen.csv`), one row per session × camera
 
@@ -223,6 +226,73 @@ for session in screen.query("view == 'bottom' and use").session: ...
 row = vs.screen_camera(session, camera, mp4, video_csv, behavior_json, trigger_log)
 ```
 
+## Decisions during implementation (2026-10-02)
+
+Where the design above left a choice open, the simplest option was taken:
+
+- **Verdict order (timing).** `timing_verdict` keeps the old decision order, then the new rows:
+  `ALWAYS_REQUIRED`; `REQUIRED_TO_REINDEX` when frames were lost; then `trigger_log_count`,
+  `trigger_log_matches_csv`, `harp_matches_camera`, `video_frame_count` when they ran. Lost
+  frames, glitches, and out-of-order frame numbers with no frames lost (corrupted metadata) still
+  do not exclude, as before. When several checks fail, the reason reported can differ from the
+  old error message (old: a trigger log mismatch was raised before the input checks); the
+  outcome (use or not) is the same.
+- **Re-index trial row.** `harp_matches_camera` is always in the table; skipped (`passed` None)
+  with a reason when no frames were lost, when re-indexing is not allowed, or when the trigger
+  log does not fit the CSV. The input checks run on the CSV's Harp column (the log, when it
+  passes `trigger_log_matches_csv`, is equal within one tick).
+- **Method names.** The internal method is `_correction_method(checks)`: `as written`,
+  `fix glitches`, `re-index`, or None when excluded. `video_screen` reads it for
+  `timing_method` (same package).
+- **`check_session`** reports `exclude: unreadable` where it said `refuse: unreadable`.
+- **Quality record.** The `video_quality_<camera>.json` field `action` is now `verdict`, and the
+  session card says `VERDICT:`, matching timing. The notebook's stored outputs still say
+  `action` (not re-run).
+- **Quality runs when timing excludes**, so both verdicts are always recorded (`reason` names
+  timing first).
+- **`quality=False`**: `quality`, `window` and the medians are empty; `use` follows timing. A
+  later run with `quality=True` screens those cameras again.
+- **Cache key.** A camera is skipped when its last row in `video_screen.jsonl` has the same
+  `versions` string (this package and `aind-video-utils`), no error, and quality measured if
+  asked for. `cards` does not count.
+- **Work unit.** `screen_sessions` groups input rows by session: one worker task per session,
+  so files given as URLs (the trigger log) download once per session, and the session's rows
+  are appended to `video_screen.jsonl` together. `video_screen.csv` holds the last row per
+  session × camera of everything in the log, not only the current inputs.
+- **Errors.** `reason` is `error: <type>: <message> (<file>:<line>)`; the timing and quality
+  columns stay empty.
+- **Unusable video CSV is an exclusion, not an error** (decided 2026-10-02, after the full run).
+  When `load_video_timing` raises `ValueError` (no rows, unknown header, missing values), timing
+  is `exclude: unreadable` (the wording of `check_session`), `video_timing_<camera>.json` records
+  the message, and quality still runs (middle 50% of the file, as the survey did). Such a CSV
+  fails the same way on every run, so retrying it as an error would be pointless. A CSV that
+  cannot be opened or downloaded (`OSError`) is still an error. Messages and window notes name
+  the inputs as given (the URL), not their temporary downloads.
+- **Frame count** comes from the MP4 index (`read_mp4_frame_index(mp4).n_samples`), read once
+  for timing and again by quality sampling.
+- **Session JSON given as a URL is downloaded first**, like the CSV and the log, so a network
+  failure is an `error:` row (screened again) rather than a silent "middle 50%" window. Found in
+  the full run: one camera's JSON fetch failed on a DNS outage and fell back to the middle of the
+  file (2026-10-02).
+- **No manual overrides** (decided 2026-10-02). `screen_overrides.csv` was implemented, then
+  limited to the quality decision (an override must never bring back a camera that failed timing
+  QC), then removed: every exclusion in the 301-session run is a real fault, a false exclusion is
+  better fixed in `CHECKS` (for every similar camera, with evidence), and an analysis that needs
+  a different choice can filter the table in its own code. Add back if reviewers need a shared
+  record of decisions made by eye.
+- **Workers start with `spawn`** (2026-10-02): CI on Linux with Python 3.12 hung in the pool test
+  at `os.fork()` (the process already runs threads); `spawn` is the macOS default, and safe on
+  Linux (Code Ocean) too.
+- **Trigger log column** is a boolean: True when a log was given and readable.
+- **Version 0.2.0.** `__version__` is 0.2.0 in this branch (the release comes with this PR,
+  decided 2026-10-02 for Part A); README "Changes" says "0.2.0 (unreleased)". The screen's
+  cache key includes it.
+- **Survey script.** Lists sessions in parallel threads, builds all-URL inputs, and calls
+  `screen_sessions(..., cards=True)`. The thumbnails and contact sheets are gone (the session
+  card already shows 8 evenly spaced frames); `--report` is the index plus every card. Its
+  output folder is the screen's (`video_screen.csv`, not `summary.csv`). matplotlib's `Agg`
+  backend is selected in `main()` so the imports stay at the top.
+
 ## Steps (commits)
 
 1. `video_timing_qc`: complete checks table (trigger log rows, re-index trial,
@@ -234,7 +304,7 @@ row = vs.screen_camera(session, camera, mp4, video_csv, behavior_json, trigger_l
 2. `video_quality_qc`: rename to `check_video_quality` / `quality_verdict` everywhere.
 3. `video_screen`: input handling (temp download of a CSV or log given as a URL), then
    `screen_camera`, `screen_sessions` (incremental by session × camera and library version,
-   workers, quality on/off, cards), `load_screen` with overrides.
+   workers, quality on/off, cards), `load_screen` (overrides later removed).
 4. Survey script builds inputs from its S3 listing and calls `screen_sessions`; README section and "Changes"; plan docs
    (pointers to this file from `VIDEO_QUALITY_QC_PLAN.md` Phase 3 and `VIDEO_TIMING_QC_PLAN.md`;
    this file's status updated as steps land).
@@ -250,7 +320,7 @@ row = vs.screen_camera(session, camera, mp4, video_csv, behavior_json, trigger_l
   actions → `use`); trigger-log mismatch and failed re-index now in the checks table; frame-count
   mismatch excludes; `timing_action` alias unchanged with a warning; the timing
   correction's outputs unchanged on every existing test; unreadable log ignored; errors recorded and re-screened; incremental skip;
-  `quality=False`; writes nothing without `out_dir`; overrides in `load_screen`.
+  `quality=False`; writes nothing without `out_dir`; ~~overrides in `load_screen`~~ (removed).
   100% line coverage of `video_screen.py`, `video_quality_qc.py`, `video_quality_report.py` and
   the changed timing code; full suite passes;
   black, isort, flake8 clean.
@@ -265,3 +335,53 @@ row = vs.screen_camera(session, camera, mp4, video_csv, behavior_json, trigger_l
   `me_dry_run_fip.csv` on its 97 sessions (178 use, 16 exclude), plus the 56 clock-step cameras
   excluded across all 301.
 - Then open the PR from `feat/video-screen` to `main`.
+
+## Verification: results (2026-10-02)
+
+- **Unit tests:** 102 tests pass (`tests/test_video_screen.py`: 17; timing: 29). 100% line
+  coverage of `video_screen.py`, `video_timing_qc.py`, `video_quality_qc.py` and
+  `video_quality_report.py`; black, isort and flake8 clean on every touched file (the legacy
+  `kinematics/tongue_kinematics_utils.py`, one line changed, keeps its existing flake8 findings).
+  Every existing timing test keeps its outcome; each now asserts the old action (deprecated
+  alias, with its warning), the new verdict and the correction method.
+- **Local vs URL inputs** (`behavior_800886_2025-08-18_13-14-52`, MP4 over HTTPS in both): every
+  column identical except float formatting in the last digit (CSV round trip, ~1e-16).
+- **Full re-run** of the 301 curated FIP sessions (602 cameras) through `screen_sessions` into
+  `video_quality_qc_data/screen_fip/`: 2 h 40 min with 8 workers (network-bound: about 155 s per
+  camera against 65 s in the 2026-10-01 survey, CPU mostly idle). 17 cameras hit transient
+  network errors (a DNS outage, 2 read timeouts); a second run screened only those, as designed.
+  One camera's session JSON fetch failed in the same outage and silently fell back to the middle
+  50% window; fixed (the JSON is now downloaded first, so that is an error) and re-screened.
+
+| Result | Cameras |
+|---|---|
+| `use` | 500 |
+| `timing: exclude: harp_evenly_spaced` (Harp clock steps) | 56 |
+| `quality: exclude: pct_clipped_high median <= 3.75` (side) | 33 (3 more are timing-excluded first) |
+| `timing: exclude: trigger_log_count` | 8 |
+| `quality: exclude: sharpness_dev <= 0.45` (820688 2026-01-27, IR off at the start) | 2 |
+| `quality: exclude: similarity p5 < 0.998` (816212 2025-12-23 bottom) | 1 |
+| `timing: exclude: clock_rates_agree` (816212 2025-12-24 bottom, −70%, 199k frames lost) | 1 |
+| `timing: exclude: unreadable` (808057 2025-09-03 side: CSV has missing values) | 1 |
+
+Totals: 602 = 500 use + 102 excluded. Timing excludes 66 (56 + 8 + 1 + 1), quality 39 (36 + 2 +
+1), both 3 (side cameras that also clip: 818586 2026-01-16, 809487 2025-10-07, 809491
+2025-11-13); `reason` names timing first. No errors after the re-runs.
+
+- **Quality:** verdicts identical to the revision 8 survey on all 602 cameras (563 use, 36
+  clipping, 2 IR off, 1 not looking at the mouse); sharpness, mean and clipping medians
+  identical. `similarity_p5` changed on 601 cameras (max 0.089) from the all-samples
+  reference, and no camera crossed 0.7 or 0.998: **the similarity cutoffs hold under the
+  all-samples reference** (pending since revision 8). One camera has `similarity_p5` in
+  [0.99, 0.998).
+- **Timing:** 56 clock-step cameras, as expected. 8 `trigger_log_count`: 6 cameras with
+  exactly one event more than the frame numbers span, all with heavy frame loss (168k–333k
+  frames), and 818586 2026-01-16 (both cameras, +1326/+1328 events, no frames lost). The old
+  code refused all 9 of these extra cameras too (`correct_video_timing` raised on the trigger log
+  count; `clock_rates_agree` was always required). No video frame count differs from its CSV
+  (0 of 601). Trigger log used on 601 cameras. Methods: 392 as written, 52 fix glitches, 92
+  re-index.
+- **Not checked:** `me_dry_run_fip.csv` (97 sessions: 178 use, 16 exclude) is not on this
+  machine, so the per-session comparison was not done.
+- **Open:** whether a trigger log with exactly one event past the last exposure (a frame lost
+  after the last saved row) should be accepted instead of excluded (6 cameras).
