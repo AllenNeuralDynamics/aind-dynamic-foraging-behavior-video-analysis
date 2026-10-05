@@ -5,8 +5,8 @@
 `timing_action` still works in 0.2.0 (same strings, plus a `DeprecationWarning`); nothing in
 this repo calls it. In order:
 
-1. **Release 0.2.0** (merge PR #10, tag it). Callers pinned to v0.1.0 are unaffected until
-   they move.
+1. ~~**Release 0.2.0**~~ Done 2026-10-05 (PR #10, tag `v0.2.0`). Callers pinned to v0.1.0
+   are unaffected until they move.
 2. **Move `kinematics_analysis` to 0.2.0** (`environment/Dockerfile` pins v0.1.0, `41e5b59`):
    - `code/build_me_table.py`: store `timing_verdict` instead of `timing_action`, pass the
      trigger log to `check_video_timing(timing, trigger_times, video_frame_count=...)`, and drop

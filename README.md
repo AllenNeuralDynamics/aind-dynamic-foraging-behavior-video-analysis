@@ -232,7 +232,7 @@ floats, since cameras without timing checks leave them empty.
 
 ## Changes
 
-### 0.2.0 (unreleased)
+### 0.2.0 (2026-10-05)
 
 - **New:** `video_screen` (see above): `screen_camera`, `screen_sessions`,
   `load_screen`.

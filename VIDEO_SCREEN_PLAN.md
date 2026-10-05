@@ -1,9 +1,9 @@
 # Plan: video screening before analysis (Phase 3 of video timing + quality QC)
 
-> **Status (2026-10-02): Part A merged (PR #9). Part B in progress on `feat/video-screen`:
-> steps 1–4 done (timing module, quality renames, `video_screen`, survey script and docs)
-> and verified (see "Verification: results"). Branch pushed; PR not opened yet. Step 5
-> (`run_batch_analysis(screen=...)`, optional) not done.** Decisions so far are dated in place. Background:
+> **Status (2026-10-05): Part A merged (PR #9). Part B merged (PR #10): steps 1–4 done
+> (timing module, quality renames, `video_screen`, survey script and docs) and verified (see
+> "Verification: results"). Released as 0.2.0. Step 5 (`run_batch_analysis(screen=...)`,
+> optional) not done. Step 6 (`kinematics_analysis` off `timing_action`): see `TODO.md`.** Decisions so far are dated in place. Background:
 > `VIDEO_QUALITY_QC_PLAN.md` (revisions 1–8) and `VIDEO_TIMING_QC_PLAN.md`.
 
 ## Context
