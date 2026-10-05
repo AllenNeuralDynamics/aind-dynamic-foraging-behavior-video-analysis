@@ -72,7 +72,10 @@ the session's trigger log is used when present, and sessions whose timing
 cannot be trusted (e.g. a Harp clock step) raise `ValueError` and are skipped
 by the batch. The checks, the decision, the evidence and the known limits are
 in `VIDEO_TIMING_QC_PLAN.md`; `examples/video_timing_qc_validation.ipynb`
-shows it on real sessions against the trigger log.
+shows it on real sessions against the trigger log, and
+`examples/video_timing_failure_modes.ipynb` documents each failure mode seen
+in real data (one example session each, with how it is corrected or why it
+is excluded).
 
 
 ## Video quality QC
@@ -238,6 +241,10 @@ floats, since cameras without timing checks leave them empty.
   `timing_verdict` (`use` or `exclude: <check>`); how a usable camera is
   corrected follows from the checks (`no_frames_lost`: re-index;
   `harp_has_no_glitches`: fix glitches).
+- **Docs:** `examples/video_timing_failure_modes.ipynb`, the seven timing
+  failure modes found in real data (Harp glitch, frame drops, both, corrupted
+  camera metadata, Harp clock step, more triggers than exposures, camera not
+  following the trigger), each with an example session.
 
 ### 0.2.0 (2026-10-05)
 
