@@ -91,8 +91,8 @@ def check(checks, name):
     return checks.set_index("check").loc[name].to_dict()
 
 
-# The deprecated timing_action's strings and the verdict and correction
-# method each now gives: every old outcome is kept (refuse: X -> exclude: X).
+# The outcome names of the former timing_action (removed in 0.3.0) and the
+# verdict and correction method each gives (refuse: X -> exclude: X).
 OLD_ACTIONS = {
     "use harp as written": ("use", "as written"),
     "fix glitches": ("use", "fix glitches"),
@@ -113,9 +113,7 @@ class VideoTimingQCTest(unittest.TestCase):
         self._tmp.cleanup()
 
     def assertOutcome(self, checks, action):
-        """The old action (with a warning), the verdict and the method."""
-        with self.assertWarns(DeprecationWarning):
-            self.assertEqual(vtq.timing_action(checks), action)
+        """The verdict and the method for an old outcome name."""
         verdict, method = OLD_ACTIONS.get(
             action, (action.replace("refuse", "exclude"), None)
         )
@@ -422,8 +420,6 @@ class VideoTimingQCTest(unittest.TestCase):
             failed(checks), {"no_frames_lost", "harp_matches_camera"}
         )
         self.assertEqual(check(checks, "harp_matches_camera")["rows"], [10000])
-        with self.assertWarns(DeprecationWarning):  # old: passed, then raised
-            self.assertEqual(vtq.timing_action(checks), "re-index")
         self.assertEqual(
             vtq.timing_verdict(checks), "exclude: harp_matches_camera"
         )

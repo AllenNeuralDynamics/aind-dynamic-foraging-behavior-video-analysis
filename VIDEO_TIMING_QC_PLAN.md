@@ -4,7 +4,7 @@
 > **2026-10-02:** the module's verdict (`timing_verdict`: `use` or `exclude: <check>`, final from
 > `check_video_timing`, which now includes the trigger log, the re-index trial and the frame
 > count), `write_video_timing`, and screening before analysis are planned and tracked in
-> `VIDEO_SCREEN_PLAN.md`; `timing_action` is deprecated. Where they disagree,
+> `VIDEO_SCREEN_PLAN.md`; `timing_action` was deprecated in 0.2.0 and removed in 0.3.0. Where they disagree,
 > `VIDEO_SCREEN_PLAN.md` wins.
 > Written so a new contributor or agent can pick it up without the
 > conversation that produced it; the evidence behind each decision is in "Background" and
@@ -242,10 +242,10 @@ from aind_dynamic_foraging_behavior_video_analysis import video_timing_qc as vtq
 
 timing = vtq.load_video_timing(csv_path)      # harp_time_raw, frame_number, camera_time (s)
 checks = vtq.check_video_timing(timing)       # one row per check
-vtq.timing_action(checks)                     # what the correction will do
+vtq.timing_verdict(checks)                    # "use" or "exclude: <check>"
 fixed = vtq.correct_video_timing(timing)      # + harp_time, harp_source; raises if refused
 fixed = vtq.correct_video_timing(timing, trigger_times=vtq.read_harp_trigger_log(log_path))
-vtq.check_session(behavior_videos_path)       # one row per camera: action, failed checks, ...
+vtq.check_session(behavior_videos_path)       # one row per camera: verdict, failed checks, ...
 
 times, source = vtq.correct_frame_times(frame_number, camera_time, trigger_times)  # arrays only
 ```
@@ -280,7 +280,7 @@ apart; runs of bad values are not glitches; Harp column only, so it also works i
 
 ### Decision and correction
 
-`timing_action` decides from the check table; `correct_frame_times` runs the same checks
+`timing_verdict` (until 0.3.0 also `timing_action`) decides from the check table; `correct_frame_times` runs the same checks
 (`input_checks`) and follows it, so the decision exists in one place.
 
 1. Fix isolated Harp glitches. **Every session** must pass `no_duplicate_frames`,

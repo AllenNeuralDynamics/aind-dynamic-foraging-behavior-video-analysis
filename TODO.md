@@ -14,7 +14,7 @@ this repo calls it. In order:
    - `code/verify_video_timing_qc.ipynb` and `code/fip_me_aligned_table_plan.md`: replace the
      `timing_action` mentions.
    - Better still, consume the screen (`video_screen.load_screen`) instead of its own dry run.
-3. **Remove `timing_action`** in a later release, once step 2 has landed: delete the function,
+3. **Remove `timing_action`** (PR open, merge after step 2 has landed; 0.3.0): delete the function,
    its use in `tests/test_video_timing_qc.py` (`assertOutcome`, `test_failed_reindex_in_checks`),
    and say so in the README "Changes".
 

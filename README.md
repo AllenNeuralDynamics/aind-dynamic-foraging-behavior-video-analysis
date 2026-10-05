@@ -232,6 +232,13 @@ floats, since cameras without timing checks leave them empty.
 
 ## Changes
 
+### 0.3.0 (unreleased)
+
+- **Removed:** `video_timing_qc.timing_action` (deprecated in 0.2.0). Use
+  `timing_verdict` (`use` or `exclude: <check>`); how a usable camera is
+  corrected follows from the checks (`no_frames_lost`: re-index;
+  `harp_has_no_glitches`: fix glitches).
+
 ### 0.2.0 (2026-10-05)
 
 - **New:** `video_screen` (see above): `screen_camera`, `screen_sessions`,

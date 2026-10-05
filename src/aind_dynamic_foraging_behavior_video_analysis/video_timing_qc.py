@@ -60,7 +60,6 @@ Example::
 """
 
 import json
-import warnings
 from pathlib import Path
 
 import numpy as np
@@ -520,31 +519,6 @@ def _correction_method(checks):
     if _failed(passed, "harp_has_no_glitches"):
         return "fix glitches"
     return "as written"
-
-
-def timing_action(checks) -> str:
-    """Deprecated: use :func:`timing_verdict`.
-
-    One of ``use harp as written``, ``fix glitches``, ``re-index`` or
-    ``refuse: <check>``, from the input checks only.
-    """
-    warnings.warn(
-        "timing_action is deprecated; use timing_verdict",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    passed = dict(zip(checks["check"], checks["passed"]))
-    for check in ALWAYS_REQUIRED:
-        if not passed[check]:
-            return f"refuse: {check}"
-    if passed["no_frames_lost"]:
-        if not passed["harp_has_no_glitches"]:
-            return "fix glitches"
-        return "use harp as written"
-    for check in REQUIRED_TO_REINDEX:
-        if not passed[check]:
-            return f"refuse: {check}"
-    return "re-index"
 
 
 def _raise_if_excluded(checks):
