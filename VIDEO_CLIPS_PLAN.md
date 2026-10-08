@@ -1,6 +1,9 @@
 # Plan: `video_clips` — frame-exact clips, and frames for labeling
 
-> **Status: revision 8 (2026-10-08), pre-implementation.** Revision 8 builds the module around
+> **Status: revision 9 (2026-10-08), Phases 1–3 implemented** (`video_clips.py`,
+> `video_alignment.event_frame_ranges`, `tests/test_video_clips.py`, README,
+> `examples/video_clips_example.ipynb`); results under "Verification", deviations under
+> "Changes". Phase 4 (consumers) is outside this repo. Revision 8 built the module around
 > one key, *(source video, frame index)*: it cuts and extracts by frame index and takes no
 > times. Turning event times into frames is `video_alignment`'s job; which cameras to use is the
 > screen's. Earlier revisions are summarized under "Changes". The file was
@@ -270,7 +273,43 @@ point it at the new extra. `event_frame_ranges` stays core (numpy, pandas).
 4. black, isort, flake8, interrogate; 100% coverage of `video_clips` and the new alignment
    function.
 
+### Results (2026-10-08)
+
+- **1, 2, 4:** 21 tests in `tests/test_video_clips.py`, all passing with ffmpeg 8.1.1; 100%
+  coverage of `video_clips.py` and of `event_frame_ranges`; black, isort, flake8 and
+  interrogate clean on the new files. Round trips cover B-frames, a variable container frame
+  rate and an unsafe edit list (a stream copy from 0.5 s); the drop test uses `simulate` with
+  10 dropped exposures (a window across them has 10 fewer frames; the raw column puts a later
+  event 10 frames late). `_png_name` matches DLC's rule at 999/1000/1001 frames.
+- **3, `behavior_816212_2025-12-05_13-47-41` bottom** (MP4 over HTTPS, 187,024 exposures not
+  saved; raw Harp time 374 s behind at the end): three clips at late lick-bout starts, ±0.1 s.
+  Clip frames 0–3 were compared with source frames −3…+6, decoded by counting from the
+  preceding keyframe with PyAV: every clip frame *k* matched source `start + k` best (mean
+  |Δ| ≈ 1.1 grey levels, the CRF 18 re-encode; neighbours 1.5–3). Not pixel for pixel, since
+  clips are re-encoded. Note for anyone repeating it: PyAV (libavformat) reports PTS with the
+  edit list's `media_time` subtracted (64 ticks = 2 frames here), the raw index does not.
+  By eye: in the clearest clip the mouth opens and the tongue meets the lower spout in the
+  second half of the clip (about frames 64–88 of 96, 30–80 ms after the lick time), not
+  exactly at the centre. The raw column would have put the clips 162,000 frames late.
+- **3, not done:** `behavior_800886_2025-08-18_13-14-52` local-vs-URL (needs the 4.4 GB MP4
+  locally); the DLC GUI and the LP context-model load (no DLC/LP install here).
+
 ## Changes
+
+### From revision 8 (revision 9, 2026-10-08): implementation
+
+- **Clips get even timestamps** (`-vf setpts=N/FRAME_RATE/TB`, the source's nominal rate, for
+  playback only). Without it a variable-rate source gave repeated timestamps in the clip.
+  Seeking still uses no frame rate.
+- **`http_input_flags` is public** in `aind_video_utils.utils` (0.7.0); imported, not copied.
+- **Frame counts of clips** (`select_frames`, `add_context_frames`) come from the clip's MP4
+  index (`n_samples`), so neither needs a sidecar.
+- **`clip` is empty (NA) for skipped rows**, not None: pandas 3 stores the column as strings.
+  Read it as `clips["clip"]` (`clips.clip` is `DataFrame.clip`).
+- **Labels CSVs**: both index layouts are read (DLC 2.3+ three columns; older DLC and LP one
+  path); images listed in several CSVs count once. `add_context_frames` skips neighbours outside
+  the clip rather than flooring at 0.
+- k-means thumbnails are 40×30 gray (`KMEANS_SIZE`); clips are CRF 18 (`ENCODE_ARGS`).
 
 ### From revision 7 (2026-10-08)
 
