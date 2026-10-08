@@ -1,6 +1,6 @@
 # Plan: `video_clips` — frame-exact clips, and frames for labeling
 
-> **Status: revision 9 (2026-10-08), Phases 1–3 implemented** (`video_clips.py`,
+> **Status: revision 9 (2026-10-08), Phases 1–3 implemented, released in 0.3.0 (PR #13, tag `v0.3.0`)** (`video_clips.py`,
 > `video_alignment.event_frame_ranges`, `tests/test_video_clips.py`, README,
 > `examples/video_clips_example.ipynb`); results under "Verification", deviations under
 > "Changes". Revision 8 built the module around

@@ -294,7 +294,7 @@ frames.
 
 ## Changes
 
-### 0.3.0 (unreleased)
+### 0.3.0 (2026-10-08)
 
 - **New:** `video_clips` (see above): `cut_clip`, `cut_clips`,
   `read_clip_info`, `select_frames`, `add_context_frames`,
