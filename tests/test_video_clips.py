@@ -539,3 +539,103 @@ class RoundTripTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExtractTrialClipTest(unittest.TestCase):
+    """kinematics.video_clip_utils.extract_trial_clip, across a drop."""
+
+    @classmethod
+    def setUpClass(cls):
+        """A source video and frame-level kinematics with 20 frames lost."""
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.dir = Path(cls.tmp.name)
+        cls.src = write_source(cls.dir / "src.mp4")
+        rows = np.arange(N_SOURCE)
+        # 20 exposures lost after row 60: later rows are 20 frames later.
+        harp = 100.0 + (rows + 20 * (rows > 60)) / FPS
+        first_go_cue = 101.0
+        cls.kins = pd.DataFrame(
+            {
+                "time": harp - harp[0],
+                "time_raw": harp,
+                "time_in_session": harp - first_go_cue,
+            }
+        )
+        cls.first_go_cue = first_go_cue
+
+    @classmethod
+    def tearDownClass(cls):
+        """Remove the files."""
+        cls.tmp.cleanup()
+
+    def trial(self, go_cue_harp, name=7):
+        """A trials row with its go cue at ``go_cue_harp``."""
+        return pd.Series(
+            {"goCue_start_time_in_session": go_cue_harp - self.first_go_cue},
+            name=name,
+        )
+
+    def test_clip_is_the_frames_around_the_go_cue(self):
+        """Frames [go - pad, go + duration + pad) on corrected times.
+
+        The pad is off the frame grid, so no edge rounds either way.
+        """
+        from aind_dynamic_foraging_behavior_video_analysis.kinematics import (
+            video_clip_utils as vcu,
+        )
+
+        go_cue = self.kins.time_raw[150]
+        out = vcu.extract_trial_clip(
+            "s",
+            self.trial(go_cue),
+            self.kins,
+            self.src,
+            self.dir / "t",
+            clip_duration_s=1.0,
+            pad_s=0.11,
+        )
+        self.assertEqual(out.name, "trial_7_f0000147.mp4")
+        np.testing.assert_array_equal(frame_ids(out), np.arange(147, 184) % 64)
+        # The old constant offset put the start 20 frames late.
+        with self.assertWarns(DeprecationWarning):
+            video_time = vcu.get_video_time(
+                go_cue - self.first_go_cue - 0.11, self.kins
+            )
+        self.assertEqual(round(video_time * FPS), 147 + 20)
+        # An existing clip is kept.
+        mtime = out.stat().st_mtime_ns
+        again = vcu.extract_trial_clip(
+            "s",
+            self.trial(go_cue),
+            self.kins,
+            self.src,
+            self.dir / "t",
+            clip_duration_s=1.0,
+            pad_s=0.11,
+        )
+        self.assertEqual(again.stat().st_mtime_ns, mtime)
+
+    def test_window_clipped_to_video(self):
+        """A window past the end is cut short; one outside gives None."""
+        from aind_dynamic_foraging_behavior_video_analysis.kinematics import (
+            video_clip_utils as vcu,
+        )
+
+        late = self.kins.time_raw[N_SOURCE - 5]
+        out = vcu.extract_trial_clip(
+            "s",
+            self.trial(late),
+            self.kins,
+            self.src,
+            self.dir / "e",
+            clip_duration_s=1.0,
+            pad_s=0.0,
+        )
+        np.testing.assert_array_equal(
+            frame_ids(out), np.arange(N_SOURCE - 5, N_SOURCE) % 64
+        )
+        self.assertIsNone(
+            vcu.extract_trial_clip(
+                "s", self.trial(500.0), self.kins, self.src, self.dir / "e"
+            )
+        )

@@ -302,6 +302,19 @@ frames.
   (`aind-video-utils==0.7.0`, `scikit-learn`; ffmpeg on `PATH`).
 - **New:** `video_alignment.event_frame_ranges` (core): event times to frame
   windows, through corrected frame times.
+- **Fixed:** `kinematics/video_clip_utils.extract_trial_clip` (used by
+  `tongue_analysis.extract_example_clips_for_session`) placed clips with a
+  constant session-to-video offset, so in sessions with dropped frames they
+  started late by the time lost before the trial (minutes, late in some
+  sessions). It now finds the frames on the kinematics' corrected Harp time
+  and cuts them with `video_clips.cut_clip`. Clips are named
+  `trial_<n>_f<start_frame>.mp4` (was `trial_<n>_<start>s_to_<end>s.mp4`) and
+  are re-encoded (was a stream copy starting at the previous keyframe).
+  Returns the clip path.
+- **Deprecated:** `video_clip_utils.get_video_time` (warns); wrong in sessions
+  with dropped frames. Use `video_alignment.event_frame_ranges` on corrected
+  Harp time.
+- **Dependencies:** the `kinematics` extra adds `aind-video-utils==0.7.0`.
 - **Not tested end to end:** clips from a local MP4 vs. its URL, a project in
   DLC's labeling GUI, and an LP context model trained after
   `add_context_frames`. Where to look if one misbehaves:

@@ -14,6 +14,12 @@ from pathlib import Path
 from matplotlib import colormaps  
 from moviepy.video.io.VideoFileClip import VideoFileClip
 from typing import Dict, List, Optional, Tuple, Union
+import warnings
+
+from aind_dynamic_foraging_behavior_video_analysis.video_alignment import (
+    event_frame_ranges,
+)
+from aind_dynamic_foraging_behavior_video_analysis.video_clips import cut_clip
 
 
 def extract_clips_ffmpeg_encode(input_video_path, timestamps, clip_length, output_dir):
@@ -236,27 +242,82 @@ def find_labeled_video(session_id, data_root):
     raise FileNotFoundError(f"Labeled video not found for {session_id}")
 
 def get_video_time(session_time, tongue_kins):
-    # Find offset between session time and video time using first row
+    """Deprecated: session time plus a constant offset, which is not video time.
+
+    The offset is the kinematics ``time`` (Harp seconds since the first
+    frame) of the first row, so the result is wrong by the time lost to
+    dropped frames before ``session_time``. :func:`extract_trial_clip` no
+    longer uses it; to find frames, use
+    ``video_alignment.event_frame_ranges`` on the corrected Harp time.
+    """
+    warnings.warn(
+        "get_video_time is deprecated and wrong in sessions with dropped "
+        "frames; use video_alignment.event_frame_ranges on the corrected "
+        "Harp time (tongue_kins['time_raw']).",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     offset = tongue_kins.iloc[0]['time'] - tongue_kins.iloc[0]['time_in_session']
     return session_time + offset
+
 
 def extract_trial_clip(
     session_id, trial_row, tongue_kins, video_path, save_dir,
     clip_duration_s=10.0, pad_s=0.5
 ):
-    start = trial_row['goCue_start_time_in_session']
-    end = start + clip_duration_s
+    """Cut the frames from ``pad_s`` before a trial's go cue to
+    ``clip_duration_s + pad_s`` after it, frame-exact.
 
-    # Convert to video time
-    video_start = get_video_time(start, tongue_kins) - pad_s
-    video_end = get_video_time(end, tongue_kins) + pad_s
-    clip_length = video_end - video_start
+    Row ``i`` of ``tongue_kins`` is video frame ``i`` and its ``time_raw`` is
+    that frame's corrected Harp time (``integrate_keypoints_with_video_time``
+    keeps every frame), so the window is found on those times
+    (``video_alignment.event_frame_ranges``) and cut by frame index
+    (``video_clips.cut_clip``). Right also in sessions with dropped frames,
+    where the clip has fewer frames than the window's duration at the
+    nominal rate. The window is clipped to the video.
 
-    # Filename
-    trial_num = trial_row.name if hasattr(trial_row, 'name') else trial_row['trial']
-    filename_stem = f"trial_{trial_num}"
+    Parameters
+    ----------
+    session_id : str
+        Unused; kept for callers.
+    trial_row : pandas.Series
+        A trial with ``goCue_start_time_in_session``; its name (or
+        ``trial``) numbers the clip.
+    tongue_kins : pandas.DataFrame
+        Frame-level kinematics with ``time_raw`` and ``time_in_session``.
+    video_path : str or pathlib.Path
+        The session's video (an MP4 frame-aligned with the predictions).
+    save_dir : str or pathlib.Path
+        Output folder.
+    clip_duration_s, pad_s : float
+        Seconds after the go cue, and padding on both sides.
 
-    extract_clips_ffmpeg_after_reencode(
-        video_path, [video_start], clip_length, save_dir, filename_stems=[filename_stem]
+    Returns
+    -------
+    pathlib.Path or None
+        The clip (``trial_<n>_f<start_frame>.mp4``; an existing one is
+        kept), or None if the window has no frames in the video.
+    """
+    harp_time = tongue_kins['time_raw'].to_numpy()
+    # time_in_session = time_raw - first go cue, the same constant per row.
+    first_go_cue = float(
+        tongue_kins['time_raw'].iloc[0] - tongue_kins['time_in_session'].iloc[0]
     )
+    go_cue = trial_row['goCue_start_time_in_session'] + first_go_cue
+    window = event_frame_ranges(
+        go_cue, harp_time, before=pad_s, after=clip_duration_s + pad_s
+    ).iloc[0]
+    start = int(window['start_frame'])
+    n_frames = min(int(window['n_frames']), len(harp_time) - start)
+
+    trial_num = trial_row.name if hasattr(trial_row, 'name') else trial_row['trial']
+    if n_frames < 1:
+        print(f"Trial {trial_num}: window not in the video, no clip")
+        return None
+    save_dir = Path(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+    out_path = save_dir / f"trial_{trial_num}_f{start:07d}.mp4"
+    if not out_path.exists():
+        cut_clip(video_path, start, n_frames, out_path)
     print(f"Saved clip for trial {trial_num} to {save_dir}")
+    return out_path

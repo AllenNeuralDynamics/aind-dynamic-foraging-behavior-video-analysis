@@ -238,8 +238,9 @@ point it at the new extra. `event_frame_ranges` stays core (numpy, pandas).
 
 - **Any QC, and any time input to `video_clips`.** The screen and timing QC are upstream.
 - **`kinematics/video_clip_utils.py` stays** (`tongue_analysis.py` uses it). Its
-  `extract_trial_clip` seeks by a constant offset and is off in drop sessions; tracked in
-  `TODO.md`. Moving it onto `event_frame_ranges` + `cut_clip` is the fix.
+  `extract_trial_clip` sought by a constant offset and was off in drop sessions; since
+  revision 9 it uses `event_frame_ranges` (on the kinematics' corrected `time_raw`, one row per
+  frame) + `cut_clip`, and `get_video_time` is deprecated.
 - **Event selection strategies** (see "Picking events"), finding files, NWB loading.
 - **Re-encoding-era helpers dropped**: `run_aind_behavior_video_transformation`,
   `copy_nonvideo_and_metadata_files`, `copy_if_exists`, `is_video_file`, `find_top_level_folders`,

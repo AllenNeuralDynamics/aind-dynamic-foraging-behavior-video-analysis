@@ -30,6 +30,9 @@ dependencies = [
 [project.optional-dependencies]
 kinematics = [
     'aind-dynamic-foraging-basic-analysis',
+    # video_clip_utils.extract_trial_clip cuts with video_clips.cut_clip;
+    # same pin as video-qc and video-clips.
+    'aind-video-utils==0.7.0',
     'aind-dynamic-foraging-data-utils',
     'matplotlib',
     'moviepy',
