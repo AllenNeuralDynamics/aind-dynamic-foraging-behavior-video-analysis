@@ -30,7 +30,7 @@ Example::
 
     ranges = va.event_frame_ranges(go_cues, timing["harp_time"], 1.0, 1.0)
     clips = cut_clips(mp4, ranges, "clips/", f"{session}_{camera}")
-    for clip in clips["clip"].dropna().unique():  # skipped: no clip
+    for clip in clips["clip_path"].dropna().unique():  # skipped: NaN
         select_frames(clip, 10, "dlc_project/labeled-data/")
     # ... label in DLC ...
     add_context_frames("dlc_project/labeled-data/", "clips/")
@@ -333,7 +333,7 @@ def cut_clips(mp4, ranges, out_dir, prefix):
     Returns
     -------
     pandas.DataFrame
-        ``ranges`` plus ``clip`` (path; missing if skipped) and ``status``:
+        ``ranges`` plus ``clip_path`` (NaN if skipped) and ``status``:
         ``cut``, ``exists`` or ``skipped: <why>``. A row that cannot be cut
         is skipped; the others still are.
     """
@@ -375,7 +375,7 @@ def cut_clips(mp4, ranges, out_dir, prefix):
         clips.append(str(clip))
         statuses.append("cut")
     out = ranges.copy()
-    out["clip"] = clips
+    out["clip_path"] = clips
     out["status"] = statuses
     return out
 
@@ -527,7 +527,7 @@ def labeled_frames_table(labeled_data_dir):
     Returns
     -------
     pandas.DataFrame
-        One row per labeled image: ``image`` (as in the CSV), ``clip``,
+        One row per labeled image: ``image`` (as in the CSV), ``clip_stem``,
         ``prefix``, ``clip_frame``, ``start_frame``, ``source_frame``
         (``start_frame + clip_frame``; a row of the camera's CSV and of its
         pose predictions).
@@ -549,7 +549,7 @@ def labeled_frames_table(labeled_data_dir):
         rows.append(
             {
                 "image": image,
-                "clip": clip,
+                "clip_stem": clip,
                 "prefix": prefix,
                 "clip_frame": clip_frame,
                 "start_frame": start,
@@ -558,7 +558,7 @@ def labeled_frames_table(labeled_data_dir):
         )
     columns = [
         "image",
-        "clip",
+        "clip_stem",
         "prefix",
         "clip_frame",
         "start_frame",
@@ -593,7 +593,7 @@ def add_context_frames(labeled_data_dir, clips_dir, offsets=(-2, -1, 1, 2)):
     Returns
     -------
     pandas.DataFrame
-        One row per PNG written: ``clip``, ``labeled_frame``,
+        One row per PNG written: ``clip_stem``, ``labeled_frame``,
         ``clip_frame``, ``path``.
     """
     labeled_data_dir, clips_dir = Path(labeled_data_dir), Path(clips_dir)
@@ -623,12 +623,12 @@ def add_context_frames(labeled_data_dir, clips_dir, offsets=(-2, -1, 1, 2)):
             _write_png(clip_path, k, png)
             written.append(
                 {
-                    "clip": clip,
+                    "clip_stem": clip,
                     "labeled_frame": labeled,
                     "clip_frame": k,
                     "path": str(png),
                 }
             )
     return pd.DataFrame(
-        written, columns=["clip", "labeled_frame", "clip_frame", "path"]
+        written, columns=["clip_stem", "labeled_frame", "clip_frame", "path"]
     )

@@ -309,13 +309,13 @@ class StubbedCutTest(unittest.TestCase):
         self.assertTrue(out.status[1].startswith("skipped: "))
         self.assertIn("non-monotonic", out.status[1])
         self.assertIn("past the video", out.status[3])
-        self.assertTrue(pd.isna(out["clip"][1]))
-        self.assertTrue(out["clip"][0].endswith("s_c_f0000010.mp4"))
+        self.assertTrue(pd.isna(out["clip_path"][1]))
+        self.assertTrue(out["clip_path"][0].endswith("s_c_f0000010.mp4"))
         self.assertEqual(
             list(again.status[[0, 2, 4]]), ["exists", "exists", "exists"]
         )
         self.assertEqual(other.status[0], "cut")
-        info = vc.read_clip_info(out["clip"][4])
+        info = vc.read_clip_info(out["clip_path"][4])
         self.assertEqual(
             (info["source_video"], info["start_frame"], info["n_frames"]),
             ("src.mp4", 20, 5),
@@ -328,7 +328,7 @@ class StubbedCutTest(unittest.TestCase):
             },
         )
         self.assertEqual(
-            vc.read_clip_info(out["clip"][0])["source_video"], "other.mp4"
+            vc.read_clip_info(out["clip_path"][0])["source_video"], "other.mp4"
         )
         names = sorted(p.name for p in (self.dir / "clips").iterdir())
         self.assertEqual(
@@ -462,7 +462,7 @@ class RoundTripTest(unittest.TestCase):
         ranges = pd.DataFrame({"start_frame": [100, 30], "n_frames": [40, 12]})
         clips = vc.cut_clips(self.vfr, ranges, clips_dir, "sess_cam")
         self.assertEqual(list(clips.status), ["cut", "cut"])
-        long_clip, short_clip = map(Path, clips["clip"])
+        long_clip, short_clip = map(Path, clips["clip_path"])
 
         picked = {}
         for algorithm in ("uniform", "random", "kmeans"):
@@ -530,7 +530,7 @@ class RoundTripTest(unittest.TestCase):
             self.dir / "sidecar",
             "p",
         )
-        sidecar = Path(out["clip"][0]).with_suffix(".json")
+        sidecar = Path(out["clip_path"][0]).with_suffix(".json")
         self.assertEqual(
             set(json.loads(sidecar.read_text())),
             {"source_video", "start_frame", "n_frames", "versions"},

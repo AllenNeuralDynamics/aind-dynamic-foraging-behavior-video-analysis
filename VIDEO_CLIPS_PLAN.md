@@ -101,7 +101,7 @@ ffmpeg -accurate_seek -ss f"{seek:.9f}" [http input flags] -i <mp4> \
 
 **`video_clips.cut_clips(mp4, ranges, out_dir, prefix)`**: many clips from one MP4. Reads the
 index once; cuts each row of `ranges` (any table with `start_frame` and `n_frames`; rows with
-`in_video` False are skipped). Returns `ranges` plus `clip` and `status` (`cut`, `exists`,
+`in_video` False are skipped). Returns `ranges` plus `clip_path` and `status` (`cut`, `exists`,
 `skipped: <why>`); one bad seek skips that row only.
 
 Names and sidecars:
@@ -173,7 +173,7 @@ LP labeling app was not checked; it does not apply to the DLC → LP path.
   there. Stated in the docstring; not corrected.
 
 **`labeled_frames_table(labeled_data_dir)`**: one row per labeled image in every
-`CollectedData*.csv`: `image` (path as in the CSV), `clip` (stem), `prefix`, `clip_frame` (from
+`CollectedData*.csv`: `image` (path as in the CSV), `clip_stem`, `prefix`, `clip_frame` (from
 the PNG name), `start_frame` (from the stem), `source_frame = start_frame + clip_frame`. Parsed
 from names alone, so it needs neither clips nor sidecars. Behavior time is one more join:
 
@@ -304,8 +304,10 @@ point it at the new extra. `event_frame_ranges` stays core (numpy, pandas).
 - **`http_input_flags` is public** in `aind_video_utils.utils` (0.7.0); imported, not copied.
 - **Frame counts of clips** (`select_frames`, `add_context_frames`) come from the clip's MP4
   index (`n_samples`), so neither needs a sidecar.
-- **`clip` is empty (NA) for skipped rows**, not None: pandas 3 stores the column as strings.
-  Read it as `clips["clip"]` (`clips.clip` is `DataFrame.clip`).
+- **Columns `clip_path` (`cut_clips`) and `clip_stem` (`labeled_frames_table`,
+  `add_context_frames`), not `clip`**: `df.clip` is the `DataFrame.clip` method, so the column
+  could only be read as `df["clip"]`. `clip_path` is NaN for skipped rows (pandas 3 stores the
+  column as strings).
 - **Labels CSVs**: both index layouts are read (DLC 2.3+ three columns; older DLC and LP one
   path); images listed in several CSVs count once. `add_context_frames` skips neighbours outside
   the clip rather than flooring at 0.

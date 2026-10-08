@@ -261,7 +261,7 @@ ranges = va.event_frame_ranges(go_cues[::20], timing["harp_time"], before=1.0, a
 clips = vc.cut_clips(mp4, ranges, out_dir="clips/", prefix=f"{session}_{camera}")
 
 # clips are the videos of a DLC project; PNGs named as DLC names them
-for clip in clips["clip"].dropna().unique():  # skipped rows have no clip
+for clip in clips["clip_path"].dropna().unique():  # NaN for skipped rows
     vc.select_frames(clip, 10, "dlc_project/labeled-data/", algorithm="kmeans")
 # ... label in DLC, then before training a Lightning Pose context model:
 vc.add_context_frames("dlc_project/labeled-data/", "clips/")
