@@ -13,11 +13,6 @@ more so later in the session. Fix by moving it onto `video_alignment.event_frame
 corrected `harp_time`) + `video_clips.cut_clip`, which now exist (`VIDEO_CLIPS_PLAN.md`,
 "Out of scope").
 
-`video_clips` follow-ups (`VIDEO_CLIPS_PLAN.md`, "Verification" results): the local-vs-URL
-check on `behavior_800886_2025-08-18_13-14-52`; one small DLC project opened in DLC's labeling
-GUI and loaded by LP with a context model after `add_context_frames`; Phase 4 consumers
-(re-encoding capsule on 3.11+, our DLC → LP conversion code).
-
 Other screening follow-ups (optional `run_batch_analysis(screen=...)`, the one-extra-event
 trigger log question) are in `VIDEO_SCREEN_PLAN.md`. Video timing QC follow-ups are in
 `VIDEO_TIMING_QC_PLAN.md`.

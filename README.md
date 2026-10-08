@@ -302,6 +302,20 @@ frames.
   (`aind-video-utils==0.7.0`, `scikit-learn`; ffmpeg on `PATH`).
 - **New:** `video_alignment.event_frame_ranges` (core): event times to frame
   windows, through corrected frame times.
+- **Not tested end to end:** clips from a local MP4 vs. its URL, a project in
+  DLC's labeling GUI, and an LP context model trained after
+  `add_context_frames`. Where to look if one misbehaves:
+  - *local and URL clips differ*: both seek with the same MP4 index, so
+    compare `read_mp4_frame_index(...).pts` for the two, then the HTTP input
+    flags in `_cut_command`.
+  - *DLC shows frames nobody picked*: context frames were added before
+    labeling; run `add_context_frames` only after.
+  - *DLC extracts duplicates of picked frames*: compare the PNG names with
+    `_png_name` (DLC's `ceil(log10(n_frames))` digits) for that clip length.
+  - *an LP context model learns no better than a plain one*: LP silently uses
+    the centre frame when a neighbour is missing; check that `img<t±1,2>.png`
+    exist next to each labeled image, with the same digit width, in the
+    `labeled-data` folder LP reads.
 - **Removed:** `video_timing_qc.timing_action` (deprecated in 0.2.0). Use
   `timing_verdict` (`use` or `exclude: <check>`); how a usable camera is
   corrected follows from the checks (`no_frames_lost`: re-index;

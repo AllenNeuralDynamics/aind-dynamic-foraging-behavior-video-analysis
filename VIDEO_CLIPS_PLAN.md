@@ -3,7 +3,7 @@
 > **Status: revision 9 (2026-10-08), Phases 1–3 implemented** (`video_clips.py`,
 > `video_alignment.event_frame_ranges`, `tests/test_video_clips.py`, README,
 > `examples/video_clips_example.ipynb`); results under "Verification", deviations under
-> "Changes". Phase 4 (consumers) is outside this repo. Revision 8 built the module around
+> "Changes". Revision 8 built the module around
 > one key, *(source video, frame index)*: it cuts and extracts by frame index and takes no
 > times. Turning event times into frames is `video_alignment`'s job; which cameras to use is the
 > screen's. Earlier revisions are summarized under "Changes". The file was
@@ -291,8 +291,8 @@ point it at the new extra. `event_frame_ranges` stays core (numpy, pandas).
   By eye: in the clearest clip the mouth opens and the tongue meets the lower spout in the
   second half of the clip (about frames 64–88 of 96, 30–80 ms after the lick time), not
   exactly at the centre. The raw column would have put the clips 162,000 frames late.
-- **3, not done:** `behavior_800886_2025-08-18_13-14-52` local-vs-URL (needs the 4.4 GB MP4
-  locally); the DLC GUI and the LP context-model load (no DLC/LP install here).
+- **3, not run:** the local-vs-URL comparison, the DLC GUI and the LP context-model load. Not
+  expected to fail; what to check if they do is in the README changelog (0.3.0).
 
 ## Changes
 
