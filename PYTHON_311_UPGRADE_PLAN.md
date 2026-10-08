@@ -60,7 +60,7 @@ The library's own imports also matter: `aind_dynamic_foraging_basic_analysis` an
 | 2026-09-25 | `kinematics_analysis` CLAUDE.md updated | `wild` @ `7715fe6` | Branch roles: `wild` = dev with Claude, `main` = verified code (promote by merging `wild`). 3.12 syntax allowed. **Stage 2 done for `kinematics_analysis`.** Remaining gate for Stage 3: the Stage 0 capsules |
 | 2026-09-25 | Stage 1 merged; Stage 0 closed; `env/py312` retired | library `main` @ `d94854f`; tag `archive/env-py312` | Only Stage 3 gate left: the video re-encoding capsule (user) |
 | 2026-09-26 | Stage 3 prepared | branch `build/python-311-floor`; tag `py39-final` → `d94854f` | Gate cleared (re-encoding capsule pinned). `requires-python >=3.11`, CI 3.11/3.12. PR open for review |
-| 2026-09-26 | **Stage 3 merged: upgrade complete** | library `main` @ `5738b32` | `requires-python >=3.11`. Open follow-ups: optional syntax-modernization PR; the re-encoding capsule's image to 3.11+ (tracked in `VIDEO_CLIPS_MIGRATION_PLAN.md`, Phase 0) |
+| 2026-09-26 | **Stage 3 merged: upgrade complete** | library `main` @ `5738b32` | `requires-python >=3.11`. Open follow-ups: optional syntax-modernization PR; the re-encoding capsule's image to 3.11+ (tracked in `VIDEO_CLIPS_PLAN.md`, Phase 0) |
 
 ### Stage 0: inventory (read-only)
 - [x] List every Code Ocean capsule and pipeline that installs this library. *2026-09-25:*
@@ -72,7 +72,7 @@ The library's own imports also matter: `aind_dynamic_foraging_basic_analysis` an
         from `@main`, so **Stage 3 would break its next build.** Fix: pin that one line to
         `@d94854f4f8072bd76823855c6b29ec6a452a2c4a` (library `main` after Stage 1), then rebuild.
         Follow-up: to take any post-Stage-3 library version (notably `video_clips.py` from
-        `VIDEO_CLIPS_MIGRATION_PLAN.md`, which targets this capsule), first move it to 3.11+,
+        `VIDEO_CLIPS_PLAN.md`, which targets this capsule), first move it to 3.11+,
         e.g. the AIND template as in Stage 2.*
       - *No other capsules use the library.*
 - [x] Ask collaborators whether anyone runs this library from a personal or other-team 3.9
@@ -298,7 +298,7 @@ pandas 3 and other upgrades become separate, deliberate steps: edit the constrai
       removed (3.11 and 3.12 remain).
 - [x] CI matrix: drop 3.9 and keep 3.11 + 3.12.
 - [x] README: badge `>=3.11`, and the `py39-final` install line for 3.9/3.10 environments.
-- [x] ~~Update `VIDEO_CLIPS_MIGRATION_PLAN.md` ("works on Python 3.9")~~. *Not needed: that plan
+- [x] ~~Update `VIDEO_CLIPS_PLAN.md` ("works on Python 3.9")~~. *Not needed: that plan
       (local branch `plan/video-clips-migration` @ `4094a20`) already makes "move the capsule to
       3.11/3.12" its Phase 0. Worth adding when that branch is next touched: the capsule is on
       3.10.9 and pinned to `d94854f`.*
