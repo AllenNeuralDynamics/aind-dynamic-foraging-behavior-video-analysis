@@ -369,7 +369,7 @@ So:
 | Lightning Pose tongue kinematics | `kinematics/tongue_analysis.py::generate_tongue_dfs` → `integrate_keypoints_with_video_time` | Uses `Behav_Time` after the 2× fix as keypoint `time_raw`. Drop sessions pass silently with shifted times; drops of ≥ 2 frames get camera times overwritten. | **Done (Phase 2).** Check + correct; keypoint `time_raw` from corrected `harp_time`; untrusted sessions raise and are skipped by the batch. Optional trigger-log mode. |
 | Motion-energy table | `kinematics_analysis/code/fip_me_aligned_table_plan.md` (branch `fip-motion-energy`) | Planned | Store corrected `harp_time`, `harp_source`, QC class per row / camera; ME is row-aligned with the CSV, so no other change. |
 | FIP motion energy in analysis | `kinematics_analysis/code/fip_utils.py::motion_energy_to_session` | Reads CSV via `read_video_csv`, Harp time via `TIME_COLUMN_ALIASES` | Read the ME table's corrected time instead. |
-| Video clips | `VIDEO_CLIPS_MIGRATION_PLAN.md` | Planned | Event → frame by `searchsorted` on corrected `harp_time`. |
+| Video clips | `VIDEO_CLIPS_PLAN.md` | Planned (revision 6 uses it) | Event → frame by `searchsorted` on corrected `harp_time`. |
 | BEAST latents | `aind-BEAST-train-test/code/analyze_latents.ipynb` | `compute_video_session_offset`, `session_time_to_video_time` | Same as clips for drop sessions. |
 | Notebooks | `kinematics_analysis/code/{model_quality,test_session_wrapper}.ipynb` call `integrate_keypoints_with_video_time`; `val_03`, `val_04` use `session_time_to_video_time` | Unchanged | `integrate_keypoints_with_video_time` callers get corrected times (and a changed returned CSV frame) once they move their pin. |
 

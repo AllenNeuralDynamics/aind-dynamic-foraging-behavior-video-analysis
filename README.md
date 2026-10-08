@@ -233,10 +233,102 @@ module docstring. Counts (`frames_lost`, ...) read back from the CSV as
 floats, since cameras without timing checks leave them empty.
 
 
+## Video clips and frames for labeling
+
+`video_clips` cuts frame-exact clips from a behavior video and turns them into
+frames for labeling (DeepLabCut, then Lightning Pose). Everything is keyed on
+*(source video, frame index)*: a clip is frames `[start, start + n)` of an
+MP4, a labeled image is frame `k` of a clip, so source frame `start + k`, which
+is also a row of the video CSV and of pose predictions. The module takes no
+times and runs no QC; event times become frame ranges in
+`video_alignment.event_frame_ranges`, from the **corrected** Harp time of
+`video_timing_qc` (the raw CSV column is off by minutes in sessions with
+dropped frames).
+
+```python
+from aind_dynamic_foraging_behavior_video_analysis import video_alignment as va
+from aind_dynamic_foraging_behavior_video_analysis import video_clips as vc
+from aind_dynamic_foraging_behavior_video_analysis import video_timing_qc as vtq
+
+# a camera the screen says to use (video_screen), its corrected frame times
+timing = vtq.correct_video_timing(
+    vtq.load_video_timing(video_csv), trigger_times=vtq.read_harp_trigger_log(trigger_log)
+)
+# events -> frame windows (any event times on the Harp clock)
+go_cues = va.read_trial_times(behavior_json)["goCue_start_time"].to_numpy()
+ranges = va.event_frame_ranges(go_cues[::20], timing["harp_time"], before=1.0, after=1.0)
+# frame windows -> clips (mp4 may be an https URL; only the bytes needed are read)
+clips = vc.cut_clips(mp4, ranges, out_dir="clips/", prefix=f"{session}_{camera}")
+
+# clips are the videos of a DLC project; PNGs named as DLC names them
+for clip in clips["clip_path"].dropna().unique():  # NaN for skipped rows
+    vc.select_frames(clip, 10, "dlc_project/labeled-data/", algorithm="kmeans")
+# ... label in DLC, then before training a Lightning Pose context model:
+vc.add_context_frames("dlc_project/labeled-data/", "clips/")
+# every label back to its source frame and behavior time
+labels = vc.labeled_frames_table("dlc_project/labeled-data/")
+labels["behavior_time"] = timing["harp_time"].to_numpy()[labels["source_frame"]]
+```
+
+- `event_frame_ranges` gives `start_frame`, `n_frames` and `in_video` per
+  event (frames in `[t - before, t + after)`). The same ranges slice any
+  per-frame signal (motion energy, pose predictions) with no video involved.
+- `cut_clips` names each clip `<prefix>_f<start_frame:07d>.mp4` and writes a
+  sidecar `<stem>.json` (`source_video`, `start_frame`, `n_frames`,
+  `versions`) last; re-running skips clips already cut. Status per row: `cut`,
+  `exists` or `skipped: <why>`. Seeks use the MP4's own sample timestamps
+  (`aind-video-utils`), never a frame rate. Clips are re-encoded (H.264, CRF
+  18) with even timestamps, so a clip that spans dropped frames does not play
+  in real time; behavior time comes from the timing join.
+- `select_frames` (`uniform`, `random` or `kmeans`) never picks the first or
+  last `margin` frames, so each labeled frame has the ±2 neighbours that
+  `add_context_frames` writes for Lightning Pose's context models. Lightning
+  Pose has no such step and silently uses the centre frame when they are
+  missing. Run it after labeling: DLC's labeling GUI shows every PNG in a
+  folder.
+
+Design and decisions: `VIDEO_CLIPS_PLAN.md`;
+`examples/video_clips_example.ipynb` runs it on a public session with dropped
+frames.
+
+
 ## Changes
 
 ### 0.3.0 (unreleased)
 
+- **New:** `video_clips` (see above): `cut_clip`, `cut_clips`,
+  `read_clip_info`, `select_frames`, `add_context_frames`,
+  `labeled_frames_table`, in a new `video-clips` extra
+  (`aind-video-utils==0.7.0`, `scikit-learn`; ffmpeg on `PATH`).
+- **New:** `video_alignment.event_frame_ranges` (core): event times to frame
+  windows, through corrected frame times.
+- **Fixed:** `kinematics/video_clip_utils.extract_trial_clip` (used by
+  `tongue_analysis.extract_example_clips_for_session`) placed clips with a
+  constant session-to-video offset, so in sessions with dropped frames they
+  started late by the time lost before the trial (minutes, late in some
+  sessions). It now finds the frames on the kinematics' corrected Harp time
+  and cuts them with `video_clips.cut_clip`. Clips are named
+  `trial_<n>_f<start_frame>.mp4` (was `trial_<n>_<start>s_to_<end>s.mp4`) and
+  are re-encoded (was a stream copy starting at the previous keyframe).
+  Returns the clip path.
+- **Deprecated:** `video_clip_utils.get_video_time` (warns); wrong in sessions
+  with dropped frames. Use `video_alignment.event_frame_ranges` on corrected
+  Harp time.
+- **Dependencies:** the `kinematics` extra adds `aind-video-utils==0.7.0`.
+- **Not tested end to end:** clips from a local MP4 vs. its URL, a project in
+  DLC's labeling GUI, and an LP context model trained after
+  `add_context_frames`. Where to look if one misbehaves:
+  - *local and URL clips differ*: both seek with the same MP4 index, so
+    compare `read_mp4_frame_index(...).pts` for the two, then the HTTP input
+    flags in `_cut_command`.
+  - *DLC shows frames nobody picked*: context frames were added before
+    labeling; run `add_context_frames` only after.
+  - *DLC extracts duplicates of picked frames*: compare the PNG names with
+    `_png_name` (DLC's `ceil(log10(n_frames))` digits) for that clip length.
+  - *an LP context model learns no better than a plain one*: LP silently uses
+    the centre frame when a neighbour is missing; check that `img<t±1,2>.png`
+    exist next to each labeled image, with the same digit width, in the
+    `labeled-data` folder LP reads.
 - **Removed:** `video_timing_qc.timing_action` (deprecated in 0.2.0). Use
   `timing_verdict` (`use` or `exclude: <check>`); how a usable camera is
   corrected follows from the checks (`no_frames_lost`: re-index;
@@ -315,8 +407,8 @@ pip install -e .
 ```
 
 The core install (numpy, pandas) covers `video_alignment`,
-`video_timing_qc` and `kinematics/tongue_lickometer_utils`. For the kinematics, ephys, NWB and
-video-clip modules, install the `kinematics` extra:
+`video_timing_qc` and `kinematics/tongue_lickometer_utils`. For the kinematics, ephys and NWB
+modules (including the older `kinematics/video_clip_utils`), install the `kinematics` extra:
 ```bash
 pip install -e ".[kinematics]"
 ```
@@ -327,9 +419,15 @@ For video quality QC, install the `video-qc` extra (it also needs
 pip install -e ".[video-qc]"
 ```
 
+For video clips and frames for labeling, install the `video-clips` extra (it
+also needs `ffmpeg` on `PATH`):
+```bash
+pip install -e ".[video-clips]"
+```
+
 To develop the code, run
 ```bash
-pip install -e ".[kinematics,video-qc,dev]"
+pip install -e ".[kinematics,video-qc,video-clips,dev]"
 ```
 
 ## Contributing

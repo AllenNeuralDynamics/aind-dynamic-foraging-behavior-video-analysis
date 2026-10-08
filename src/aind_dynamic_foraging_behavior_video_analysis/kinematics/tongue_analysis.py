@@ -13,7 +13,6 @@ import matplotlib.pyplot as plt
 from aind_dynamic_foraging_behavior_video_analysis.kinematics.video_clip_utils import (
     extract_clips_ffmpeg_after_reencode,
     find_labeled_video,
-    get_video_time,
     extract_trial_clip
 )
 from aind_dynamic_foraging_behavior_video_analysis.kinematics.kinematics_nwb_utils import get_nwb_file

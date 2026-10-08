@@ -50,7 +50,9 @@ same Harp-clock values ``TransferToNWB.bonsai_to_nwb`` writes into the NWB
 trials table, so no NWB is needed. :func:`behavior_time_to_frame_index`
 puts behavior times on video frames through a corrected timing table.
 :func:`task_frame_window` combines them: the frames from the first trial
-start to the last trial end.
+start to the last trial end. :func:`event_frame_ranges` gives a window of
+frames around each event, for clips (``video_clips``) or for slicing any
+per-frame signal.
 
 Example
 -------
@@ -402,6 +404,59 @@ def behavior_time_to_frame_index(behavior_times, harp_time):
         last frame.
     """
     return np.searchsorted(np.asarray(harp_time), behavior_times, side="left")
+
+
+def event_frame_ranges(event_times, harp_time, before, after):
+    """Return the video frames around each event, one row per event.
+
+    The window of an event at ``t`` is the frames whose Harp time lies in
+    ``[t - before, t + after)``: :func:`behavior_time_to_frame_index` at
+    both ends. Frame indices are CSV rows, so the ranges slice any per-frame
+    signal row-aligned with the video CSV (motion energy, pose predictions,
+    latents) as well as the video itself (``video_clips.cut_clips``).
+
+    Pass the **corrected** ``harp_time`` (``video_timing_qc.
+    correct_video_timing``). The raw CSV column is wrong for whole sessions
+    with dropped frames (by minutes late in some sessions), so a window
+    placed by it shows the wrong moment. Across a drop a window has fewer
+    frames and still spans the requested time.
+
+    Parameters
+    ----------
+    event_times : float or array-like
+        Event times on the Harp (behavior_time) clock.
+    harp_time : array-like
+        Harp time of every video frame, increasing.
+    before, after : float
+        Seconds before and after each event.
+
+    Returns
+    -------
+    pandas.DataFrame
+        ``event_time``; ``start_frame`` (first frame at or after
+        ``event_time - before``); ``n_frames`` (frames up to, not
+        including, the first frame at or after ``event_time + after``);
+        ``in_video`` (False when the window runs past either end of the
+        video, or the event time is NaN).
+    """
+    harp_time = np.asarray(harp_time, dtype=float)
+    event_times = np.atleast_1d(np.asarray(event_times, dtype=float))
+    start = behavior_time_to_frame_index(event_times - before, harp_time)
+    end = behavior_time_to_frame_index(event_times + after, harp_time)
+    if len(harp_time):
+        in_video = (event_times - before >= harp_time[0]) & (
+            event_times + after <= harp_time[-1]
+        )
+    else:
+        in_video = np.zeros(len(event_times), dtype=bool)
+    return pd.DataFrame(
+        {
+            "event_time": event_times,
+            "start_frame": start.astype("int64"),
+            "n_frames": (end - start).astype("int64"),
+            "in_video": in_video,
+        }
+    )
 
 
 def task_frame_window(behavior_json, video_csv, trigger_log=None):

@@ -1,6 +1,6 @@
 # TODO
 
-Nothing open here. `timing_action` was retired 2026-10-05: released 0.2.0 (tag `v0.2.0`),
+`timing_action` was retired 2026-10-05: released 0.2.0 (tag `v0.2.0`),
 `kinematics_analysis` moved to `timing_verdict` (`fip-motion-energy` `600ad99`, dry run identical
 to v0.1.0 on Code Ocean), and the function removed in 0.3.0 (PR #12).
 

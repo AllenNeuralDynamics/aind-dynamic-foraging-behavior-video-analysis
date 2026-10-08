@@ -20,13 +20,13 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
       # opencv-python needs libGL at import time; video_quality_qc needs
-      # ffprobe (through aind-video-utils).
+      # ffprobe (through aind-video-utils); video_clips needs ffmpeg.
       - name: Install system packages
         run: sudo apt-get update && sudo apt-get install -y libgl1 ffmpeg
       - name: Install package
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[kinematics,video-qc,dev]"
+          python -m pip install -e ".[kinematics,video-qc,video-clips,dev]"
       - name: Show resolved versions
         run: python -m pip list
       # Blocking: syntax errors and undefined names only. The full flake8
