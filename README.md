@@ -307,7 +307,7 @@ frames.
 
 ## Changes
 
-### 0.4.0 (unreleased)
+### 0.4.0 (2026-10-23)
 
 - **New:** `video_clips.cut_event_clips` (event times and per-frame times →
   `event_frame_ranges` → `cut_clips`) and `video_clips.write_frames` (source
