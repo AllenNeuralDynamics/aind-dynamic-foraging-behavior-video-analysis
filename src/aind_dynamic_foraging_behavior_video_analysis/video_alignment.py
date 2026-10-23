@@ -32,15 +32,21 @@ cue. The core relationships are::
     # behavior_time -> session_time
     session_time = behavior_time     - first_go_cue_time
 
-Caveat: dropped frames
-----------------------
+Caveat: dropped frames (the video_time conversions are deprecated)
+------------------------------------------------------------------
 These conversions assume Harp time advances one frame interval per saved
 video frame. That holds for the raw CSV Harp column even when frames were
 dropped (the acquisition workflow pairs frames with triggers in arrival
-order), but then events land on the wrong frames. After correcting Harp
-time with :mod:`video_timing_qc`, map events to frames with
-``numpy.searchsorted`` on the corrected ``harp_time`` instead of by
-subtraction.
+order), but then events land on the wrong frames: frame ``i`` sits at about
+``i / fps`` in the file, while its corrected Harp time also counts every
+frame dropped before it. So :func:`compute_video_session_offset` and the four
+``video_time`` conversions are right only in sessions without dropped frames,
+and are deprecated (they warn). Find frames on the corrected ``harp_time`` of
+:mod:`video_timing_qc` instead: :func:`behavior_time_to_frame_index`,
+:func:`event_frame_ranges`, and ``video_clips.cut_event_clips`` /
+``video_clips.write_frames`` to cut or write them. Shifting between
+``behavior_time`` and ``session_time`` by the first go cue stays exact: both
+are on the Harp clock.
 
 Trial times
 -----------
@@ -66,6 +72,7 @@ spike of interest at 112.0 s::
 
 import json
 import urllib.request
+import warnings
 from typing import List, Optional
 
 import numpy as np
@@ -81,6 +88,18 @@ DEFAULT_COLUMNS = ["Behav_Time", "Frame", "Camera_Time", "Gain", "Exposure"]
 # Old/flat calls it "Behav_Time", New/AIND calls it "ReferenceTime". Both
 # hold absolute harp seconds, on the same clock as the NWB event times.
 TIME_COLUMN_ALIASES = ["Behav_Time", "ReferenceTime"]
+
+
+def _warn_video_time(name):
+    """Warn that ``name`` puts times on video seconds by a constant offset."""
+    warnings.warn(
+        f"{name} is deprecated: seconds into the video by a constant offset "
+        "are wrong after dropped frames. Find frames on the corrected "
+        "harp_time with behavior_time_to_frame_index or event_frame_ranges "
+        "(video_clips.cut_event_clips / write_frames to cut them).",
+        DeprecationWarning,
+        stacklevel=3,
+    )
 
 
 def _csv_has_header(video_csv_path) -> bool:
@@ -224,6 +243,9 @@ def compute_video_session_offset(
 ) -> float:
     """Return the offset between session_time and video_time.
 
+    Deprecated: right only in sessions without dropped frames; see the
+    module's "Caveat: dropped frames".
+
     The offset is ``first_go_cue_time - first_frame_behavior_time`` --
     equivalently, the ``video_time`` (seconds into the video) at which the
     first go cue occurs. Add it to a ``session_time`` to get a
@@ -249,6 +271,7 @@ def compute_video_session_offset(
     float
         The session-to-video offset, in seconds.
     """
+    _warn_video_time("compute_video_session_offset")
     first_frame_behavior_time = get_first_frame_behavior_time(
         video_csv_path, time_column=time_column, columns=columns
     )
@@ -257,6 +280,9 @@ def compute_video_session_offset(
 
 def session_time_to_video_time(session_times, offset):
     """Convert session_time to video_time by adding the offset.
+
+    Deprecated: right only in sessions without dropped frames; see the
+    module's "Caveat: dropped frames".
 
     Parameters
     ----------
@@ -270,11 +296,15 @@ def session_time_to_video_time(session_times, offset):
     Same type as ``session_times``
         ``session_times + offset``.
     """
+    _warn_video_time("session_time_to_video_time")
     return session_times + offset
 
 
 def video_time_to_session_time(video_times, offset):
     """Convert video_time to session_time by subtracting the offset.
+
+    Deprecated: right only in sessions without dropped frames; see the
+    module's "Caveat: dropped frames".
 
     Parameters
     ----------
@@ -288,11 +318,15 @@ def video_time_to_session_time(video_times, offset):
     Same type as ``video_times``
         ``video_times - offset``.
     """
+    _warn_video_time("video_time_to_session_time")
     return video_times - offset
 
 
 def behavior_time_to_video_time(behavior_times, first_frame_behavior_time):
     """Convert behavior_time (harp) to video_time.
+
+    Deprecated: right only in sessions without dropped frames; see the
+    module's "Caveat: dropped frames".
 
     Use this for events already on the raw behavior clock (e.g. spike or
     FIP times pulled straight from NWB) so you do not have to re-zero them
@@ -311,11 +345,15 @@ def behavior_time_to_video_time(behavior_times, first_frame_behavior_time):
     Same type as ``behavior_times``
         ``behavior_times - first_frame_behavior_time``.
     """
+    _warn_video_time("behavior_time_to_video_time")
     return behavior_times - first_frame_behavior_time
 
 
 def video_time_to_behavior_time(video_times, first_frame_behavior_time):
     """Convert video_time back to behavior_time (harp).
+
+    Deprecated: right only in sessions without dropped frames; see the
+    module's "Caveat: dropped frames".
 
     Parameters
     ----------
@@ -330,6 +368,7 @@ def video_time_to_behavior_time(video_times, first_frame_behavior_time):
     Same type as ``video_times``
         ``video_times + first_frame_behavior_time``.
     """
+    _warn_video_time("video_time_to_behavior_time")
     return video_times + first_frame_behavior_time
 
 

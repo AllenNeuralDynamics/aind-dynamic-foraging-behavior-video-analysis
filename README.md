@@ -268,8 +268,21 @@ vc.add_context_frames("dlc_project/labeled-data/", "clips/")
 # every label back to its source frame and behavior time
 labels = vc.labeled_frames_table("dlc_project/labeled-data/")
 labels["behavior_time"] = timing["harp_time"].to_numpy()[labels["source_frame"]]
+
+# or, in one step: events -> clips, on any per-frame times that share the
+# events' clock (e.g. a pose table's per-frame session time)
+clips = vc.cut_event_clips(mp4, lick_times, kins["time_in_session"], 0.5, 0.5, "clips/", "lick")
+# single source frames by index (row i of the CSV / pose table = frame i)
+pngs = vc.write_frames(mp4, [1200, 1201, 1202], "frames/", f"{session}_{camera}")
 ```
 
+- **Never seconds into the MP4.** Frame `i` sits at about `i / fps` in the
+  file, but its corrected Harp time also counts every frame dropped before
+  it, so session time plus a constant offset lands late after a drop. The
+  `video_alignment` conversions that do that (`compute_video_session_offset`,
+  `session_time_to_video_time`, `video_time_to_session_time`,
+  `behavior_time_to_video_time`, `video_time_to_behavior_time`) and
+  `kinematics/video_clip_utils.get_video_time` are deprecated.
 - `event_frame_ranges` gives `start_frame`, `n_frames` and `in_video` per
   event (frames in `[t - before, t + after)`). The same ranges slice any
   per-frame signal (motion energy, pose predictions) with no video involved.
@@ -293,6 +306,23 @@ frames.
 
 
 ## Changes
+
+### 0.4.0 (unreleased)
+
+- **New:** `video_clips.cut_event_clips` (event times and per-frame times →
+  `event_frame_ranges` → `cut_clips`) and `video_clips.write_frames` (source
+  frames by index as PNGs, each seek at the frame's own presentation time).
+- **New:** `video_clips.check_ffmpeg` and `MIN_FFMPEG_VERSION` (5.1): every
+  ffmpeg command first checks the version once and raises a clear error for
+  an older ffmpeg (4.4 failed on `-fps_mode` with an obscure message).
+- **Deprecated (warn):** `video_alignment.compute_video_session_offset`,
+  `session_time_to_video_time`, `video_time_to_session_time`,
+  `behavior_time_to_video_time`, `video_time_to_behavior_time`. They place
+  events in seconds into the MP4 by a constant offset, which is late after
+  dropped frames. Values are unchanged. Use `behavior_time_to_frame_index` /
+  `event_frame_ranges` on the corrected `harp_time`, and
+  `cut_event_clips` / `write_frames`. `examples/video_alignment_example.ipynb`
+  still shows the old path.
 
 ### 0.3.0 (2026-10-08)
 
@@ -420,7 +450,9 @@ pip install -e ".[video-qc]"
 ```
 
 For video clips and frames for labeling, install the `video-clips` extra (it
-also needs `ffmpeg` on `PATH`):
+also needs `ffmpeg` 5.1 or later on `PATH`, checked on first use by
+`video_clips.check_ffmpeg`; tested with 8.1. Ubuntu 22.04's apt ffmpeg is 4.4;
+conda-forge has current builds, `ffmpeg=8.1.*=gpl*` for `libx264`):
 ```bash
 pip install -e ".[video-clips]"
 ```
