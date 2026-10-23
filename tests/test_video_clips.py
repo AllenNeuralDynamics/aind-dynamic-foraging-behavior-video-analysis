@@ -183,6 +183,33 @@ class EventFrameRangesTest(unittest.TestCase):
         self.assertEqual(saved[raw.start_frame[2]] - first, len(dropped))
 
 
+class VideoTimeDeprecatedTest(unittest.TestCase):
+    """The constant-offset video_time conversions warn, values unchanged."""
+
+    def test_warn(self):
+        """Each warns DeprecationWarning and returns what it did before."""
+        from aind_dynamic_foraging_behavior_video_analysis import (
+            video_alignment as va,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = Path(tmp) / "video.csv"
+            csv_path.write_text("100.0,0,0,0,0\n100.002,1,0,0,0\n")
+            calls = [
+                (
+                    lambda: va.compute_video_session_offset(csv_path, 105.25),
+                    5.25,
+                ),
+                (lambda: va.session_time_to_video_time(6.75, 5.25), 12.0),
+                (lambda: va.video_time_to_session_time(12.0, 5.25), 6.75),
+                (lambda: va.behavior_time_to_video_time(112.0, 100.0), 12.0),
+                (lambda: va.video_time_to_behavior_time(12.0, 100.0), 112.0),
+            ]
+            for call, expected in calls:
+                with self.assertWarns(DeprecationWarning):
+                    self.assertAlmostEqual(call(), expected)
+
+
 class NamesTest(unittest.TestCase):
     """Private helpers: names and command lines."""
 
@@ -238,9 +265,12 @@ class StubbedCutTest(unittest.TestCase):
     """cut_clip and cut_clips with ffmpeg and the MP4 index stubbed."""
 
     def setUp(self):
-        """Temporary output folder."""
+        """Temporary output folder; no ffmpeg version check."""
         self.tmp = tempfile.TemporaryDirectory()
         self.dir = Path(self.tmp.name)
+        patcher = mock.patch.object(vc, "check_ffmpeg", return_value="stub")
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def tearDown(self):
         """Remove it."""
@@ -376,6 +406,47 @@ class StubbedCutTest(unittest.TestCase):
                 vc._write_png("c.mp4", 99, self.dir / "img99.png")
 
 
+class CheckFfmpegTest(unittest.TestCase):
+    """check_ffmpeg reads the version line and refuses old builds."""
+
+    def setUp(self):
+        """Forget any earlier check."""
+        vc.check_ffmpeg.cache_clear()
+        self.addCleanup(vc.check_ffmpeg.cache_clear)
+
+    def version(self, line):
+        """Run check_ffmpeg with ``ffmpeg -version`` printing ``line``."""
+        out = subprocess.CompletedProcess([], 0, line.encode() + b"\n...", b"")
+        with mock.patch("subprocess.run", return_value=out):
+            return vc.check_ffmpeg()
+
+    def test_versions(self):
+        """5.1 and later pass, older raise, git builds pass."""
+        for line in [
+            "ffmpeg version 8.1.2 Copyright (c) 2000-2026",
+            "ffmpeg version n7.1 Copyright",
+            "ffmpeg version 5.1.6-0+deb12u1",
+            "ffmpeg version N-118000-g1234abcd Copyright",
+        ]:
+            with self.subTest(line=line):
+                vc.check_ffmpeg.cache_clear()
+                self.assertEqual(self.version(line), line.split("\n")[0])
+        for line in [
+            "ffmpeg version 4.4.2-0ubuntu0.22.04.1",
+            "ffmpeg version 5.0.1",
+        ]:
+            with self.subTest(line=line):
+                vc.check_ffmpeg.cache_clear()
+                with self.assertRaisesRegex(RuntimeError, ">= 5.1"):
+                    self.version(line)
+
+    def test_missing(self):
+        """No ffmpeg on PATH."""
+        with mock.patch("subprocess.run", side_effect=FileNotFoundError):
+            with self.assertRaisesRegex(RuntimeError, "not found"):
+                vc.check_ffmpeg()
+
+
 class LabelsTableTest(unittest.TestCase):
     """labeled_frames_table from names alone."""
 
@@ -453,6 +524,43 @@ class RoundTripTest(unittest.TestCase):
         """A stream copy that trims displayed frames cannot be cut."""
         with self.assertRaisesRegex(ValueError, "edit list"):
             vc.cut_clip(self.trimmed, 0, 5, self.dir / "never.mp4")
+        with self.assertRaisesRegex(ValueError, "edit list"):
+            vc.write_frames(self.trimmed, [0], self.dir / "never", "x")
+
+    def test_event_clips_across_drop(self):
+        """Events land on the frames their times say, after a drop."""
+        # 10 frames dropped before source frame 100: from there each frame's
+        # time is 10 intervals later than its index says.
+        frame_times = np.arange(N_SOURCE) / FPS
+        frame_times[100:] += 10 / FPS
+        events = [frame_times[40], frame_times[150]]
+        half = 2.5 / FPS
+        out = vc.cut_event_clips(
+            self.src, events, frame_times, half, half, self.dir / "ev", "ev"
+        )
+        self.assertEqual(out["start_frame"].tolist(), [38, 148])
+        self.assertEqual(out["status"].tolist(), ["cut", "cut"])
+        for clip, start in zip(out["clip_path"], [38, 148]):
+            np.testing.assert_array_equal(
+                frame_ids(clip), np.arange(start, start + 5) % 64
+            )
+
+    def test_write_frames(self):
+        """Each PNG is the source frame it names, B-frames and VFR."""
+        for source in (self.src, self.vfr):
+            with self.subTest(source=source.name):
+                frames = [0, 1, 37, 63, 64, N_SOURCE - 1]
+                pngs = vc.write_frames(
+                    source, frames, self.dir / f"png_{source.stem}", "s"
+                )
+                self.assertEqual(
+                    [p.name for p in pngs],
+                    [f"s_f{k:07d}.png" for k in frames],
+                )
+                for png, k in zip(pngs, frames):
+                    self.assertEqual(frame_ids(png).tolist(), [k % 64])
+        with self.assertRaisesRegex(ValueError, "outside the video"):
+            vc.write_frames(self.src, [N_SOURCE], self.dir / "never", "x")
 
     def test_labeling_round_trip(self):
         """Clips -> PNGs -> labels -> context frames -> source frames."""

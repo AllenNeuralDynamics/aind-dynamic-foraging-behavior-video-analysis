@@ -14,7 +14,9 @@ no times and runs no QC:
 
 Clips: :func:`cut_clip` cuts one; :func:`cut_clips` cuts a table of ranges,
 names each ``<prefix>_f<start_frame:07d>.mp4``, writes a JSON sidecar
-(:func:`read_clip_info`) and resumes. Seeks use the MP4's own sample
+(:func:`read_clip_info`) and resumes; :func:`cut_event_clips` goes from event
+times and per-frame times straight to clips. Frames: :func:`write_frames`
+writes source frames by index as PNGs. Seeks use the MP4's own sample
 timestamps (``aind_video_utils.read_mp4_frame_index``), never a frame rate,
 and the MP4 may be an HTTPS URL. A clip that spans dropped frames does not
 play in real time: the missing frames are absent and the clip keeps even
@@ -39,13 +41,15 @@ Example::
         labels["source_frame"]
     ]
 
-Needs ``ffmpeg`` on ``PATH`` and the ``video-clips`` extra. Design and
+Needs ``ffmpeg`` >= 5.1 on ``PATH`` (:func:`check_ffmpeg`) and the
+``video-clips`` extra. Design and
 evidence: ``VIDEO_CLIPS_PLAN.md``.
 """
 
 from __future__ import annotations
 
 import csv
+import functools
 import json
 import math
 import os
@@ -60,6 +64,9 @@ from aind_video_utils import read_mp4_frame_index
 from aind_video_utils.utils import http_input_flags
 
 from aind_dynamic_foraging_behavior_video_analysis import __version__
+from aind_dynamic_foraging_behavior_video_analysis.video_alignment import (
+    event_frame_ranges,
+)
 
 # Sidecar next to each clip, written by cut_clips.
 SIDECAR_FILE = "{stem}.json"
@@ -83,6 +90,10 @@ ENCODE_ARGS = [
 # Size of the gray thumbnails k-means clusters (as DLC's resizewidth=30).
 KMEANS_SIZE = (40, 30)
 
+# Oldest ffmpeg with every option used here (-fps_mode is from 5.1).
+MIN_FFMPEG_VERSION = (5, 1)
+_FFMPEG_VERSION = re.compile(r"^ffmpeg version n?(\d+)\.(\d+)")
+
 _STEM = re.compile(r"^(?P<prefix>.+)_f(?P<start>\d+)$")
 _IMAGE = re.compile(r"^(?P<head>.*?)(?P<digits>\d+)\.png$")
 
@@ -90,6 +101,39 @@ _IMAGE = re.compile(r"^(?P<head>.*?)(?P<digits>\d+)\.png$")
 def _ffmpeg():
     """Return the start of every ffmpeg command."""
     return ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y"]
+
+
+@functools.lru_cache(maxsize=None)
+def check_ffmpeg():
+    """Check that ``ffmpeg`` on ``PATH`` is new enough (5.1 or later).
+
+    Run once per process, before the first ffmpeg command. A version string
+    that is not ``X.Y`` (a git build, ``N-12345-g...``) is accepted.
+
+    Returns
+    -------
+    str
+        The first line of ``ffmpeg -version``.
+
+    Raises
+    ------
+    RuntimeError
+        If ffmpeg is missing or older than :data:`MIN_FFMPEG_VERSION`.
+    """
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-version"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        raise RuntimeError("ffmpeg not found on PATH") from None
+    line = result.stdout.decode(errors="replace").split("\n")[0].strip()
+    match = _FFMPEG_VERSION.match(line)
+    if match and (int(match[1]), int(match[2])) < MIN_FFMPEG_VERSION:
+        need = ".".join(map(str, MIN_FFMPEG_VERSION))
+        raise RuntimeError(f"ffmpeg >= {need} needed, found: {line}")
+    return line
 
 
 def _cut_command(mp4, seek_seconds, n_frames, out_path):
@@ -116,6 +160,24 @@ def _cut_command(mp4, seek_seconds, n_frames, out_path):
         "-fps_mode",
         "passthrough",
         *ENCODE_ARGS,
+        str(out_path),
+    ]
+
+
+def _frame_command(mp4, seek_seconds, out_path):
+    """Return the ffmpeg command writing the frame at ``seek_seconds``."""
+    return [
+        *_ffmpeg(),
+        "-accurate_seek",
+        "-ss",
+        f"{seek_seconds:.9f}",
+        *http_input_flags(mp4),
+        "-i",
+        str(mp4),
+        "-map",
+        "0:v:0",
+        "-frames:v",
+        "1",
         str(out_path),
     ]
 
@@ -161,6 +223,7 @@ def _run(command, stdout=None):
     RuntimeError
         If ffmpeg fails, with its error output.
     """
+    check_ffmpeg()
     result = subprocess.run(command, stdout=stdout, stderr=subprocess.PIPE)
     if result.returncode != 0:
         message = result.stderr.decode(errors="replace").strip()
@@ -378,6 +441,107 @@ def cut_clips(mp4, ranges, out_dir, prefix):
     out["clip_path"] = clips
     out["status"] = statuses
     return out
+
+
+def cut_event_clips(
+    mp4, event_times, frame_times, before, after, out_dir, prefix
+):
+    """Cut a clip around each event, found on per-frame times.
+
+    :func:`video_alignment.event_frame_ranges` then :func:`cut_clips`. Any
+    clock works as long as ``event_times`` and ``frame_times`` share it, and
+    row ``i`` of ``frame_times`` is frame ``i`` of ``mp4``: the corrected
+    ``harp_time`` of ``video_timing_qc`` with Harp event times, or a pose
+    table's per-frame session time with session-time events.
+
+    Parameters
+    ----------
+    mp4 : str or pathlib.Path
+        Source MP4, a local path or an http(s) URL.
+    event_times : float or array-like
+        Event times, on the clock of ``frame_times``.
+    frame_times : array-like
+        Time of every frame of ``mp4``, increasing, corrected for dropped
+        frames.
+    before, after : float
+        Seconds before and after each event.
+    out_dir : str or pathlib.Path
+        Folder for clips and sidecars (created if needed).
+    prefix : str
+        Start of every clip name.
+
+    Returns
+    -------
+    pandas.DataFrame
+        One row per event, as :func:`cut_clips` returns.
+    """
+    ranges = event_frame_ranges(event_times, frame_times, before, after)
+    return cut_clips(mp4, ranges, out_dir, prefix)
+
+
+def write_frames(mp4, frames, out_dir, prefix, index=None):
+    """Write source frames, by index, as PNGs.
+
+    Each seek is the frame's own presentation time from the MP4's sample
+    tables, as in :func:`cut_clip`, so the PNG is that frame however many
+    frames were dropped before it. Existing PNGs are kept.
+
+    Parameters
+    ----------
+    mp4 : str or pathlib.Path
+        Source MP4, a local path or an http(s) URL.
+    frames : array-like of int
+        Frame indices (0-based, presentation order = CSV row).
+    out_dir : str or pathlib.Path
+        Folder for the PNGs (created if needed).
+    prefix : str
+        Start of every name; PNGs are ``<prefix>_f<frame:07d>.png``.
+    index : aind_video_utils.Mp4FrameIndex, optional
+        The source's frame index, when writing from one MP4 many times.
+
+    Returns
+    -------
+    list of pathlib.Path
+        The PNGs, in the order of ``frames``.
+
+    Raises
+    ------
+    ValueError
+        If a frame is outside the video, or the MP4's edit list does not
+        allow addressing frames by index.
+    RuntimeError
+        If ffmpeg fails.
+    """
+    if index is None:
+        index = read_mp4_frame_index(mp4)
+    if not index.is_frame_addressing_safe():
+        raise ValueError(
+            f"{mp4}: edit list is not safe for addressing frames by index"
+        )
+    frames = np.atleast_1d(np.asarray(frames, dtype=int))
+    bad = frames[(frames < 0) | (frames >= index.n_samples)]
+    if bad.size:
+        raise ValueError(
+            f"Frames {bad.tolist()} outside the video "
+            f"({index.n_samples} frames)"
+        )
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    paths = []
+    for frame in frames:
+        out_path = out_dir / f"{prefix}_f{int(frame):07d}.png"
+        if not out_path.exists():
+            temp = _temp_path(out_path)
+            try:
+                seek = index.presentation_seconds(int(frame))
+                _run(_frame_command(mp4, seek, temp))
+                if not temp.exists():
+                    raise RuntimeError(f"{mp4}: no frame {int(frame)}")
+                os.replace(temp, out_path)
+            finally:
+                temp.unlink(missing_ok=True)
+        paths.append(out_path)
+    return paths
 
 
 def _write_png(clip, clip_frame, out_path):
