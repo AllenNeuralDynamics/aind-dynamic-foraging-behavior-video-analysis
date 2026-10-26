@@ -1,14 +1,9 @@
 """Spout-contact lick detection and scoring against the lickometer.
 
-Layering
---------
-Sibling of ``tongue_kinematics_utils``; see the ownership split in that
-module's docstring. This module owns the *contact* definition of a lick -
-the tracked tongue within ``threshold`` pixels of a spout - and the
-event-level scoring of detected licks against lickometer times. It does not
-load or filter keypoints (``tongue_kinematics_utils.load_keypoints_from_csv``
-/ ``mask_keypoint_data`` / ``filter_timestamps_refractory``) and does not
-cut video clips (``video_clips.cut_event_clips``).
+This module owns the *contact* definition of a lick - the tracked tongue
+within ``threshold`` pixels of a spout - and the event-level scoring of
+detected licks against lickometer times. Pose loading, masking and
+smoothing are in ``kinematics.pose_io`` and ``kinematics.signal``.
 """
 import numpy as np
 import pandas as pd

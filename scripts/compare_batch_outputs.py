@@ -1,4 +1,4 @@
-"""Compare two run_batch_analysis output folders, file by file.
+"""Compare two kinematics batch output folders, file by file.
 
 Use this to see what a library change does to the tongue-kinematics
 pipeline. Run the batch twice on the same sessions, once with each version
@@ -6,19 +6,19 @@ of the library, into two folders:
 
     # env A: pip install "git+https://github.com/AllenNeuralDynamics/aind-dynamic-foraging-behavior-video-analysis@main"      # noqa: E501
     # env B: pip install -e .   (this branch)
-    from aind_dynamic_foraging_behavior_video_analysis.kinematics.tongue_analysis import run_batch_analysis  # noqa: E501
-    run_batch_analysis(pred_csvs, data_root, "out_old", extract_clips=False)
-    run_batch_analysis(pred_csvs, data_root, "out_new", extract_clips=False)
+    from aind_dynamic_foraging_behavior_video_analysis.kinematics.tasks import dynamic_foraging_tongue as dft  # noqa: E501
+    dft.run_batch(pose_csvs, data_root, "out_old")
+    dft.run_batch(pose_csvs, data_root, "out_new")
 
 then:
 
     python scripts/compare_batch_outputs.py out_old out_new
 
 It prints one line per session and parquet file in
-``<session>/intermediate_data/``: ``identical``, or what differs (row
+``<session>/``: ``identical``, or what differs (row
 count, columns, and the numeric columns with the largest differences).
 Sessions that ran in only one folder, and each folder's
-``batch_error_log.txt``, are listed at the end. ``--csv PATH`` also saves
+``errors.txt``, are listed at the end. ``--csv PATH`` also saves
 the table.
 
 For the video timing QC change, expect ``identical`` for ok sessions, small
@@ -84,7 +84,7 @@ def compare_folders(old_root, new_root):
     """Compare every session's intermediate parquet files."""
     old_root, new_root = Path(old_root), Path(new_root)
     rows = []
-    for old_file in sorted(old_root.glob("*/intermediate_data/*.parquet")):
+    for old_file in sorted(old_root.glob("*/*.parquet")):
         relative = old_file.relative_to(old_root)
         new_file = new_root / relative
         if not new_file.exists():
@@ -100,7 +100,7 @@ def compare_folders(old_root, new_root):
                 "result": result,
             }
         )
-    for new_file in sorted(new_root.glob("*/intermediate_data/*.parquet")):
+    for new_file in sorted(new_root.glob("*/*.parquet")):
         if not (old_root / new_file.relative_to(new_root)).exists():
             rows.append(
                 {
@@ -127,7 +127,7 @@ def main():
             for _, row in group.iterrows():
                 print(f"  {row['file']:<28} {row['result']}")
     for root in (args.old_root, args.new_root):
-        log = Path(root) / "batch_error_log.txt"
+        log = Path(root) / "errors.txt"
         if log.exists():
             print(f"\nErrors in {root}:\n{log.read_text()}")
     if args.csv:

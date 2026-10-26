@@ -11,31 +11,76 @@
 
 ## Scope — what belongs in this library
 
-One test: **would another AIND project doing tongue kinematics want this, unchanged?**
+One test: **would another project doing pose kinematics, or another AIND
+project doing tongue kinematics, want this unchanged?**
 
-- **Here:** code that produces or annotates the per-session intermediates
-  (`tongue_kins.parquet`, `tongue_movs.parquet`, `kps_raw_*.parquet`,
-  `tongue_quality_stats.json`), runs in the batch pipeline, or is generic to
-  tongue-kinematics sessions — keypoint I/O and filtering, segmentation,
-  aggregation, trial/lick annotation, QC stats, lick detection, video/NWB
-  lookup, video timing and quality QC, clip extraction, raster/PSTH
-  primitives. It must
-  stay stable: consuming capsules pin a commit and move the pin deliberately.
-- **Not here:** analysis built *on top of* the intermediates for one
-  scientific question — encoding models, per-unit result registries, spatial
-  topography, manuscript figure styling. That lives in the consuming repo
-  (e.g. `kinematics_analysis`) and is free to churn.
-- **Plots:** the plot functions here are pipeline QC artefacts written to
-  disk by `analyze_tongue_movement_quality`. They carry no styling contract;
-  presentation figures are the consumer's job.
-- **Contracts:** files this library writes and consumers read are declared
-  next to the writer (see `TONGUE_QUALITY_STATS_FILENAME` in
-  `kinematics/tongue_analysis.py`); read them through the accessor, not the
+- **Here:** turning tracker output into per-session tables (pose I/O,
+  smoothing, segmentation, per-segment measurements, summaries per trial or
+  window), the dynamic foraging task module that runs it in batch (frame
+  times, licks, trials, quality), video timing and quality QC, screening,
+  clips, NWB lookup, lick detection, raster/PSTH primitives. Consuming
+  capsules pin a commit and move the pin deliberately.
+- **Not here:** analysis built *on top of* those tables for one scientific
+  question — encoding models, per-unit result registries, spatial
+  topography, manuscript figures. That lives in the consuming repo (e.g.
+  `kinematics_analysis`) and is free to churn.
+- **Contracts:** files this library writes are declared next to the writer
+  (`kinematics/pipeline.py`, `kinematics/tasks/dynamic_foraging_tongue.py`);
+  read them with `pipeline.read` / `read_record` / `quality_summary`, not by
   path.
 
-Module layering is spelled out in each module's docstring
-(`kinematics/tongue_kinematics_utils.py`, `kinematics/tongue_lickometer_utils.py`,
-`ephys/tongue_ephys.py`).
+Module layering is spelled out in each module's docstring.
+
+
+## Kinematics
+
+`kinematics` turns pose-tracking output into tidy tables, one settings
+object per keypoint, so each body part is processed its own way by the same
+code. The general steps know nothing about any task (numpy, pandas, scipy);
+`kinematics/tasks/dynamic_foraging_tongue.py` adds this task's files, clock
+and events. Design, old → new mapping and verification:
+`KINEMATICS_PLAN.md`.
+
+```python
+from aind_dynamic_foraging_behavior_video_analysis.kinematics import pipeline as pl, pose_io, signal
+from aind_dynamic_foraging_behavior_video_analysis.kinematics.tasks import dynamic_foraging_tongue as dft
+
+# any tracker, any task: pose -> time -> process
+pose = pose_io.read_pose("predictions.csv")            # LP / DLC csv, DLC or SLEAP h5
+pose, frames = signal.add_time(pose, frame_times)      # one time per video frame
+result = pl.process(pose, dft.TONGUE_SETTINGS, "s1")   # or your own pl.Settings
+pl.write(result, "out/s1")
+
+# dynamic foraging tongue sessions
+status = dft.run_batch(pose_csvs, data_root, "out/")   # one folder per session
+movs = pl.read("out/<session>", tables=["movements", "trials"])["movements"]
+dft.quality_summary("out/<session>")                   # lick_coverage, movement_duration_p50
+```
+
+| Table | One row per | Key columns |
+|---|---|---|
+| `pose` | frame × keypoint | `frame, time, keypoint, x, y, likelihood` (raw pixels) |
+| `kinematics` | frame × keypoint | `frame, time, keypoint, valid, x, y, vx, vy, speed, radial_velocity, <kind>_id` |
+| `movements`, `submovements`, `bouts`, ... | segment | `<kind>_id, keypoint, start/end_frame, start/end_time, duration, n_frames, n_valid`, features |
+| `landmarks` | keypoint | `keypoint, x, y, n_valid` (session median) |
+| `trials` (task) | trial | NWB trials + `n_movements, first_movement_id, first_movement_latency, cue_response_movement_id, lick_latency, n_licks, lick_coverage` |
+| `licks` (task) | lick | NWB licks + `movement_id` |
+| `record.json` | session | settings, versions, clock (`time_zero`), timing verdict, quality |
+
+- **Segmentation** (`segment`): `tracked_runs` (parts tracked only while
+  they move, like a tongue), `above_threshold` (always-visible parts, by
+  speed or any signal), `zero_crossings` / `speed_minima` (split segments at
+  direction changes or speed dips), `bouts` (group close segments).
+- **Features** (`features`): `path`, `excursion` and `outbound` (relative
+  to a reference landmark, never absolute pixels), `spectrum` (rhythm).
+  Add a group with `features.add_feature_group`.
+- **Windows** (`intervals`): `interval_of`, `summarize_by_window`,
+  `time_bins` answer "which movement was each lick in", "movements per
+  trial" or "per second".
+- **Time**: one clock per table. The task module uses session time
+  (seconds from the first go cue); Harp time is `time +
+  record["clock"]["time_zero"]`. Row and frame stay the video frame, so
+  clips and frames are found by index as below.
 
 
 ## Video timing QC
@@ -66,8 +111,8 @@ count whether the video has one frame per CSV row. How the times are
 corrected (as written, fixing glitches, or re-indexing) is decided inside
 `correct_video_timing`.
 
-The LP pipeline (`integrate_keypoints_with_video_time`, `generate_tongue_dfs`,
-`run_batch_analysis`) uses it: keypoint `time_raw` is the corrected Harp time,
+The kinematics task module (`dynamic_foraging_tongue.frame_times`,
+`run_session`, `run_batch`) uses it: pose time is the corrected Harp time,
 the session's trigger log is used when present, and sessions whose timing
 cannot be trusted (e.g. a Harp clock step) raise `ValueError` and are skipped
 by the batch. The checks, the decision, the evidence and the known limits are
@@ -156,7 +201,7 @@ recorded as skipped; `scene_moves` and the clipping cutoff came later). Design, 
 ## Video screening
 
 `video_screen` runs timing QC and quality QC on each camera, upstream of any
-analysis (pose estimation, motion energy, `run_batch_analysis`), and gives
+analysis (pose estimation, motion energy, the kinematics batch), and gives
 one row per session × camera: `use` (both verdicts `use`) and `reason`
 (`timing: exclude: <check>`, `quality: exclude: <check>`, or `error: ...`
 for a camera that could not be screened, which is screened again next time).
@@ -307,22 +352,41 @@ frames.
 
 ## Changes
 
-### Unreleased
+### Unreleased (0.5.0, branch `feat/kinematics-core`)
 
+- **Breaking:** `kinematics/tongue_analysis.py` and
+  `kinematics/tongue_kinematics_utils.py` are replaced by `kinematics.pose_io,
+  signal, landmarks, segment, features, intervals, pipeline` and
+  `kinematics.tasks.dynamic_foraging_tongue`. Output files and columns are
+  renamed; the full old → new map is in `KINEMATICS_PLAN.md`. Movements are
+  identical; measured features match to float precision on a real session.
+- **Changed behavior:** smoothing runs per tracked run, so nothing is
+  interpolated across long gaps; positions in features are relative to the
+  session's median jaw position (was the mean of all jaw points);
+  movements spanning a go cue keep their trial and get `spans_go_cue`.
+- **New:** any number of keypoints with their own settings; segmentation
+  for always-visible parts, submovements, bouts; spectrum features;
+  DeepLabCut, SLEAP and ndx-pose readers; `record.json` with settings,
+  versions, clock and timing verdict.
+- **Removed:** QC figures, `select_percentile_movements`,
+  `extract_example_clips_for_session` (pick trials, then `cut_trial_clips`).
+- `ephys.tongue_ephys.load_intermediate_data` and `get_events_dict` read the
+  new files.
 - **Removed:** `kinematics/video_clip_utils`. Its cutters sought in seconds
   into the MP4 (late after dropped frames) or stream-copied from the previous
   keyframe; use `video_clips.cut_event_clips` / `cut_clips`.
   - `extract_clips_ffmpeg_encode`, `extract_clips_ffmpeg_after_reencode`:
     use `cut_event_clips` on corrected frame times.
-  - `extract_trial_clip`: use `tongue_analysis.cut_trial_clips` (new; one
-    call for many trials, same `trial_<n>_f<start_frame>.mp4` names, now with
-    a JSON sidecar). A window running past either end of the video is now
-    skipped (`status` `skipped: ...`) instead of cut short.
+  - `extract_trial_clip`: use `kinematics.tasks.dynamic_foraging_tongue.
+    cut_trial_clips` (one call for many trials, takes the `kinematics`
+    table, same `trial_<n>_f<start_frame>.mp4` names, now with a JSON
+    sidecar). A window running past either end of the video is now skipped
+    (`status` `skipped: ...`) instead of cut short.
   - `get_video_time` (deprecated in 0.3.0): use
     `video_alignment.event_frame_ranges`.
   - `process_and_label_clips`, `create_labeled_video`, `make_cmap`: removed
     without replacement (unused; time-based; `clip.fl` is gone in moviepy 2).
-  - `find_labeled_video` moved to `tongue_analysis`.
+  - `find_labeled_video` moved to `kinematics.tasks.dynamic_foraging_tongue`.
 - **Changed:** the `kinematics` extra no longer installs `moviepy` or
   `opencv-python`.
 - **Docs:** `examples/video_alignment_example.ipynb` now clips through
@@ -458,8 +522,8 @@ pip install -e .
 ```
 
 The core install (numpy, pandas) covers `video_alignment`,
-`video_timing_qc` and `kinematics/tongue_lickometer_utils`. For the kinematics, ephys and NWB
-modules, install the `kinematics` extra:
+`video_timing_qc` and `kinematics/tongue_lickometer_utils`. For the kinematics
+pipeline, ephys and NWB modules, install the `kinematics` extra:
 ```bash
 pip install -e ".[kinematics]"
 ```

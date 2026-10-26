@@ -3,8 +3,8 @@
 Layering
 --------
 This is the library-side *primitive* layer for ephys-by-kinematics work:
-locating a session's analysis folder, loading the per-session intermediates
-that ``kinematics.tongue_analysis`` writes, building event tables, and the
+locating a session's analysis folder, loading the per-session tables that
+``kinematics.tasks.dynamic_foraging_tongue`` writes, building event tables, and the
 raster / PSTH machinery (``compute_raster_matrix``, ``compute_psth``,
 ``RasterPlotter``). It is generic to any tongue-kinematics session.
 
@@ -48,15 +48,18 @@ def find_session_dir(session: str, roots: list[Path]) -> Path:
 
 
 def load_intermediate_data(session_dir: Path) -> dict:
-    """Load the four intermediate parquet tables for a session."""
-    idir = session_dir / "intermediate_data"
-    return {
-        "movs":   pd.read_parquet(idir / "tongue_movs.parquet"),
-        "trials": pd.read_parquet(idir / "nwb_df_trials.parquet"),
-        "licks":  pd.read_parquet(idir / "nwb_df_licks.parquet"),
-        "kins":   pd.read_parquet(idir / "tongue_kins.parquet"),
-        "events": pd.read_parquet(idir / "nwb_df_events.parquet"),
-    }
+    """Load a session's kinematics tables (``kinematics.pipeline.write``).
+
+    Returns ``{"movs": movements, "trials", "licks", "kins": kinematics,
+    "events"}``; ``events`` is absent if it was not saved.
+    """
+    session_dir = Path(session_dir)
+    names = {"movs": "movements", "trials": "trials", "licks": "licks",
+             "kins": "kinematics", "events": "events"}
+    return {key: pd.read_parquet(session_dir / f"{name}.parquet")
+            for key, name in names.items()
+            if (session_dir / f"{name}.parquet").exists()}
+
 
 def get_session_prefix(s: str) -> str:
     # 'behavior_751004_2024-12-20_13-26-07' -> 'behavior_751004_2024-12-20'
@@ -67,7 +70,10 @@ def get_session_prefix(s: str) -> str:
 # Core Utilities For Rasters
 # =========================
 
-def get_events_dict(df_trials, df_licks, tongue_kinematics):
+def get_events_dict(df_trials, df_licks, movements):
+    """Event definitions for ``build_event_df``: go cue, first cue-response
+    lick, first movement after the go cue (``movements`` from
+    ``kinematics.pipeline``), reward and reward outcome."""
     return {
         'goCue': (
             df_trials,
@@ -81,8 +87,8 @@ def get_events_dict(df_trials, df_licks, tongue_kinematics):
             {'cue_response': True}  # Only include cue-response licks
         ),
         'firstMove': (
-            tongue_kinematics,
-            'time_in_session',
+            movements,
+            'start_time',
             'trial',
             {'min_after_cue': True}  # Only movements after go cue
         ),
