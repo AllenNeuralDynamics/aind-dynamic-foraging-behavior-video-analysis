@@ -185,7 +185,8 @@ def task_tables():
     """Trials and licks on session time = Harp - 101 s.
 
     Movement k starts at session time -1 + 0.15 k and lasts 0.058 s. Go
-    cues at 0, 1.5 and 2.03 s (the last inside movement 21).
+    cues at 0, 1.5 and 2.03 s (the last inside movement 21). The last lick
+    is 5 ms before movement 25 starts: not matched, but recorded as close.
     """
     go_harp = np.array([101.0, 102.5, 103.03])
     trials = pd.DataFrame({"trial": [1, 2, 3], "goCue_start_time": go_harp,
@@ -194,12 +195,12 @@ def task_tables():
     start = lambda k: -1 + 0.15 * k  # noqa: E731
     licks = pd.DataFrame({
         "timestamps": [start(8) + 0.03, start(9) + 0.03, 0.12,
-                       start(18) + 0.03],
-        "trial": [1, 1, 1, 2],
-        "cue_response": [True, False, False, True],
-        "rewarded": [True, False, False, False],
+                       start(18) + 0.03, start(25) - 0.005],
+        "trial": [1, 1, 1, 2, 3],
+        "cue_response": [True, False, False, True, False],
+        "rewarded": [True, False, False, False, False],
         "event": ["left_lick_time", "left_lick_time", "right_lick_time",
-                  "right_lick_time"],
+                  "right_lick_time", "left_lick_time"],
     })
     return trials, licks
 
@@ -251,7 +252,14 @@ class TaskTest(unittest.TestCase):
         licks = self.result["licks"]
         self.assertEqual(list(licks["movement_id"].astype(object)
                               .where(licks["movement_id"].notna(), None)),
-                         [9, 10, None, 19])
+                         [9, 10, None, 19, None])
+        # the near miss: closest movement 26 (k = 25), 5 ms before it
+        self.assertEqual(int(licks["closest_movement_id"].iloc[4]), 26)
+        self.assertAlmostEqual(licks["closest_movement_offset_s"].iloc[4],
+                               -0.005, places=4)
+        self.assertEqual(list(licks["closest_movement_offset_s"].iloc[:2]),
+                         [0.0, 0.0])
+        self.assertEqual(int(mv.loc[26, "n_licks"]), 0)
 
     def test_submovements_get_licks_and_features(self):
         sub = self.result["submovements"]
@@ -280,7 +288,8 @@ class TaskTest(unittest.TestCase):
         self.assertEqual(tr.loc[2, "n_lick_movements"], 1)
         self.assertIn("animal_response", tr)
         q = self.result["record"]["quality"]
-        self.assertAlmostEqual(q["lick_coverage"], 0.75)
+        self.assertAlmostEqual(q["lick_coverage"], 0.6)
+        self.assertAlmostEqual(q["lick_coverage_within_10ms"], 0.8)
         self.assertAlmostEqual(q["movement_duration_p50"], 0.058, places=4)
 
     def test_time_zero_needs_both_go_cue_columns(self):
@@ -375,7 +384,7 @@ class TaskTest(unittest.TestCase):
         self.assertEqual(rows.loc["has_lick", "note"], "100.00% agree")
         self.assertEqual(rows.loc["lick coverage", "old"],
                          rows.loc["lick coverage", "new"])
-        self.assertEqual(rows.loc["quality lick_coverage", "new"], 0.75)
+        self.assertEqual(rows.loc["quality lick_coverage", "new"], 0.6)
 
     def test_run_batch(self):
         # as from data-utils: no Harp-time go cue column on trials
@@ -410,7 +419,7 @@ class TaskTest(unittest.TestCase):
                              ["excluded: timing: exclude: no_frames_lost"])
         q = dft.quality_summary(out / SESSION)
         self.assertEqual(q["session"], SESSION)
-        self.assertAlmostEqual(q["lick_coverage"], 0.75)
+        self.assertAlmostEqual(q["lick_coverage"], 0.6)
         saved = pl.read(out / SESSION, tables=["events", "trials"])
         self.assertEqual(saved["events"]["session"].iloc[0], SESSION)
 

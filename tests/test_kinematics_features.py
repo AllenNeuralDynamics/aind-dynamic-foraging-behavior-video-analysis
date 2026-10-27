@@ -117,6 +117,18 @@ class IntervalsTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             intervals.interval_of(t, [1.0], [2.0], "right")
 
+    def test_closest_interval(self):
+        t = [0.5, 1.5, 2.2, 2.9, 3.5, 5.0]
+        row, off = intervals.closest_interval(t, [1.0, 3.0], [2.0, 4.0])
+        self.assertEqual(list(row), [0, 0, 0, 1, 1, 1])
+        np.testing.assert_allclose(off, [-0.5, 0.0, 0.2, -0.1, 0.0, 1.0])
+        # a tie between the end of one and the start of the next: earlier
+        row, off = intervals.closest_interval([2.5], [1.0, 3.0], [2.0, 4.0])
+        self.assertEqual((row[0], off[0]), (0, 0.5))
+        row, off = intervals.closest_interval([1.0], [], [])
+        self.assertEqual(row[0], -1)
+        self.assertTrue(np.isnan(off[0]))
+
     def test_nearest(self):
         self.assertEqual(
             list(intervals.nearest([0.0, 1.04, 5.0], [2.0, 1.0], 0.05)),

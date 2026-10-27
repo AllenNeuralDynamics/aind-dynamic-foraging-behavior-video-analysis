@@ -366,9 +366,15 @@ frames.
   interpolated across long gaps; positions in features are relative to the
   session's median jaw position (was the mean of all jaw points);
   movements spanning a go cue keep their trial and get `spans_go_cue`.
+  On five Code Ocean sessions movements are identical, interior speeds
+  unchanged, edge-frame speeds within about ±5%, the jaw 3-6 px off the old
+  one (angles 3-5°). Licks are matched as before (inside the movement,
+  within half a frame); `licks` also gets `closest_movement_id` and
+  `closest_movement_offset_s` for licks just outside.
 - **New:** any number of keypoints with their own settings; segmentation
   for always-visible parts, submovements (every reversal kept, with
-  features, lick matches and the summed and peak split signal), bouts; spectrum features;
+  features, lick matches and the summed and peak split signal), bouts;
+  spectrum features;
   `run_batch(screen=...)` skips cameras the video screen excludes;
   DeepLabCut, SLEAP and ndx-pose readers; `record.json` with settings,
   versions, clock and timing verdict.

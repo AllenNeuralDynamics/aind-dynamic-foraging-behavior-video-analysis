@@ -38,7 +38,7 @@ from aind_dynamic_foraging_behavior_video_analysis.kinematics import (
     signal,
 )
 from aind_dynamic_foraging_behavior_video_analysis.kinematics.intervals import (  # noqa: E501
-    interval_of,
+    closest_interval,
     summarize_by_window,
 )
 
@@ -201,7 +201,7 @@ def _lick_side(event):
     return s.str.extract(r"(left|right)", expand=False)
 
 
-def annotate_movements(movements, trials, licks, lick_tolerance_s=0.01):
+def annotate_movements(movements, trials, licks, lick_tolerance_s=0.001):
     """Trial and lick columns for each movement; movement for each lick.
 
     Parameters
@@ -215,7 +215,8 @@ def annotate_movements(movements, trials, licks, lick_tolerance_s=0.01):
         ``timestamps`` (session time); ``cue_response``, ``rewarded`` and
         ``event`` are carried over when present.
     lick_tolerance_s : float
-        A lick belongs to a movement if it is within this much of it.
+        A lick belongs to a movement if it is within this much of it
+        (default 1 ms, half a frame at 500 Hz; see ``match_licks``).
 
     Returns
     -------
@@ -226,7 +227,8 @@ def annotate_movements(movements, trials, licks, lick_tolerance_s=0.01):
         ``n_licks``, and from the first lick ``lick_time``,
         ``cue_response``, ``rewarded``, ``lick_side``.
     licks : pandas.DataFrame
-        Adds ``movement_id`` (NA when no movement).
+        Adds ``movement_id``, ``closest_movement_id`` and
+        ``closest_movement_offset_s`` (see ``match_licks``).
     """
     mv = movements.sort_values("start_time", kind="stable").copy()
     tr = trials.sort_values("goCue_start_time_in_session")
@@ -252,8 +254,16 @@ def annotate_movements(movements, trials, licks, lick_tolerance_s=0.01):
     return mv.sort_index(), lk
 
 
-def match_licks(segments, licks, id_col, lick_tolerance_s=0.01):
-    """Match each lick to the segment it falls in.
+def match_licks(segments, licks, id_col, lick_tolerance_s=0.001):
+    """Match each lick to the segment it falls in, and record the closest.
+
+    A lick is the tongue touching the spout, so it should fall inside a
+    tracked segment. ``lick_tolerance_s`` allows only for timing
+    uncertainty between the lickometer and the camera: half a frame by
+    default, which reproduces the matching before 0.5.0 (nearest frame,
+    then that frame's movement). Licks just outside a segment are not
+    matched, so coverage counts them as missed, but how far they are is
+    kept so a looser rule can be applied later.
 
     Parameters
     ----------
@@ -264,31 +274,38 @@ def match_licks(segments, licks, id_col, lick_tolerance_s=0.01):
         ``timestamps``; ``cue_response``, ``rewarded`` and ``event`` are
         carried over when present.
     id_col : str
-        Segment id column; licks get a column of that name.
+        Segment id column, ``<kind>_id``.
     lick_tolerance_s : float
-        A lick belongs to a segment if it is within this much of it.
+        Largest distance from a segment for a match (default 1 ms).
 
     Returns
     -------
     segments : pandas.DataFrame
-        Adds ``n_licks`` and, from the first lick, ``lick_time``,
+        Adds ``n_licks`` and, from the first matched lick, ``lick_time``,
         ``cue_response``, ``rewarded`` (False without a lick) and
         ``lick_side``.
     licks : pandas.DataFrame
-        Adds ``id_col`` (NA when no segment).
+        Adds ``<kind>_id`` (the matched segment, NA when none),
+        ``closest_<kind>_id`` and ``closest_<kind>_offset_s`` (signed time
+        from the lick to the closest segment: 0 inside, negative before
+        its start, positive after its end).
     """
+    kind = id_col[:-3] if id_col.endswith("_id") else id_col
     seg = segments.sort_values("start_time", kind="stable").copy()
-    st = seg["start_time"].to_numpy(float)
-    en = seg["end_time"].to_numpy(float)
     lk = licks.copy()
-    hit = interval_of(lk["timestamps"].to_numpy(float),
-                      st - lick_tolerance_s, en + lick_tolerance_s)
+    row, offset = closest_interval(lk["timestamps"].to_numpy(float),
+                                   seg["start_time"], seg["end_time"])
     ids = seg[id_col].to_numpy()
-    lk[id_col] = pd.array(np.where(hit >= 0, ids[np.maximum(hit, 0)], 0),
-                          dtype="Int64")
-    lk.loc[hit < 0, id_col] = pd.NA
+    closest = pd.array(np.where(row >= 0, ids[np.maximum(row, 0)], 0),
+                       dtype="Int64")
+    closest[row < 0] = pd.NA
+    hit = (row >= 0) & (np.abs(offset) <= lick_tolerance_s)
+    lk[id_col] = closest.copy()
+    lk.loc[~hit, id_col] = pd.NA
+    lk[f"closest_{kind}_id"] = closest
+    lk[f"closest_{kind}_offset_s"] = offset
 
-    matched = lk[hit >= 0]
+    matched = lk[hit]
     if "event" in matched:
         matched = matched.assign(lick_side=_lick_side(matched["event"]))
     first = matched.sort_values("timestamps").groupby(id_col).first()
@@ -355,13 +372,22 @@ def summarize_trials(trials, movements, licks):
 
 
 def quality(movements, licks) -> dict:
-    """Session quality numbers used to include sessions."""
+    """Session quality numbers used to include sessions.
+
+    ``lick_coverage`` is the fraction of licks inside a movement (the
+    ``match_licks`` rule). ``lick_coverage_within_10ms`` also counts licks
+    up to 10 ms outside one; a large gap between the two means licks sit
+    just outside tracked movements (tracking starting late or ending early,
+    or a clock offset).
+    """
     n = int(len(licks))
     matched = int(licks["movement_id"].notna().sum())
+    near = int((licks["closest_movement_offset_s"].abs() <= 0.010).sum())
     return {
         "n_licks": n,
         "n_licks_in_movement": matched,
         "lick_coverage": matched / n if n else float("nan"),
+        "lick_coverage_within_10ms": near / n if n else float("nan"),
         "movement_duration_p50": float(movements["duration"].median())
         if len(movements) else float("nan"),
     }
@@ -440,7 +466,7 @@ def cut_trial_clips(trials, kinematics, video_path, save_dir,
 # --- One session, many sessions ---------------------------------------------
 def run_session(pose_path, video_csv, trials, licks, trigger_log=None,
                 settings=TONGUE_SETTINGS, session=None, events=None,
-                lick_tolerance_s=0.01, time_zero=None) -> dict:
+                lick_tolerance_s=None, time_zero=None) -> dict:
     """Process one session; returns the tables and record (see module).
 
     Parameters
@@ -453,6 +479,8 @@ def run_session(pose_path, video_csv, trials, licks, trigger_log=None,
         NWB trials and licks tables (``load_nwb_tables``).
     events : pandas.DataFrame, optional
         Saved alongside unchanged.
+    lick_tolerance_s : float, optional
+        See ``match_licks``; default half a frame (``0.5 / fs_hz``).
     time_zero : float, optional
         Harp time of the first go cue (session time 0), as returned by
         ``load_nwb_tables``. Default: from ``trials`` (``session_time_zero``).
@@ -461,6 +489,8 @@ def run_session(pose_path, video_csv, trials, licks, trigger_log=None,
     harp_time, timing = frame_times(video_csv, trigger_log)
     if time_zero is None:
         time_zero = session_time_zero(trials)
+    if lick_tolerance_s is None:
+        lick_tolerance_s = 0.5 / settings.fs_hz
     pose, frames = signal.add_time(pose_io.read_pose(pose_path),
                                    harp_time - time_zero)
     result = pl.process(pose, settings, session=session)

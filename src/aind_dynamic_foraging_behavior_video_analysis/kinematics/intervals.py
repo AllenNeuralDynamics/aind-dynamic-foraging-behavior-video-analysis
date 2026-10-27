@@ -55,6 +55,38 @@ def interval_of(times, starts, ends, closed="both"):
     return np.where(ok & inside, row, -1)
 
 
+def closest_interval(times, starts, ends):
+    """Per time, the closest interval and the signed time to it.
+
+    Intervals must be sorted by start and not overlap.
+
+    Returns
+    -------
+    row : numpy.ndarray of int
+        Row of the closest interval (-1 if there are none). Inside an
+        interval, that interval; between two, the nearer one (the earlier
+        on a tie).
+    offset : numpy.ndarray of float
+        0 inside the interval; negative before its start (``t - start``),
+        positive after its end (``t - end``).
+    """
+    t = np.asarray(times, float)
+    s = np.asarray(starts, float)
+    e = np.asarray(ends, float)
+    if len(s) == 0:
+        return np.full(len(t), -1, np.int64), np.full(len(t), np.nan)
+    prev = np.searchsorted(s, t, side="right") - 1
+    nxt = prev + 1
+    after = np.where(prev >= 0, t - e[np.maximum(prev, 0)], np.inf)
+    before = np.where(nxt < len(s), t - s[np.minimum(nxt, len(s) - 1)],
+                      -np.inf)
+    inside = after <= 0
+    use_prev = inside | (after <= -before)
+    row = np.where(use_prev, prev, nxt).astype(np.int64)
+    offset = np.where(inside, 0.0, np.where(use_prev, after, before))
+    return row, offset
+
+
 def nearest(times, targets, tolerance):
     """Per time, the index of the nearest target within ``tolerance``,
     -1 if none."""

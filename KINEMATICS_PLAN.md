@@ -1,6 +1,6 @@
 # Plan: kinematics — from tracker output to tidy tables
 
-> **Status: revision 3 (2026-10-27), implemented on branch `feat/kinematics-core`, not released.**
+> **Status: revision 4 (2026-10-27), implemented on branch `feat/kinematics-core`, not released.**
 > Replaces `kinematics/tongue_analysis.py` and `kinematics/tongue_kinematics_utils.py` with a
 > general core (`kinematics/`) and one task module (`kinematics/tasks/dynamic_foraging_tongue.py`).
 > A clean break: output files and column names change (map below); `kinematics_analysis` updates
@@ -177,18 +177,55 @@ Per run of valid frames (missing stretches up to `max_gap_s` bridged): add sampl
 camera dropped frames, fill gaps by interpolation, Butterworth low-pass forward and backward,
 differentiate on time. Runs are filtered separately, so nothing is interpolated across a long gap
 and one run's edges do not leak into the next. Positions and velocities are NaN on frames that
-were not valid; filled values only feed the filter. This deliberately differs from before 0.5.0
-near movement edges.
+were not valid; filled values only feed the filter. The filter is a Butterworth low-pass of
+order `order / 2` (default 2, 50 Hz) applied forward and backward (`sosfiltfilt`), so 4th order
+in effect with no phase shift; at each end of a run the signal is extended by its point
+reflection (`padtype="odd"`, 9 samples), which continues it at its current slope. Velocity is
+`np.gradient` on time: central differences inside, one-sided at the first and last frame.
+
+Before 0.5.0 the whole session was filled by one cubic spline, including the 40-120 ms between
+licks when the tongue is in the mouth and unobserved, then filtered once. A movement's edge
+frames were therefore averaged (over the filter's ±5 frames) with that invented path. The new
+method assumes instead that the tongue keeps its current velocity past the edge, which is closer
+to a tongue that becomes visible already moving. Simulated licks with known velocity
+(`scripts/simulate_smoothing_edges.py`; speed error in px/s, true speeds about 1,500-4,000
+px/s):
+
+| Noise | Method | Edge frames (first/last 3), median | Edge, 90th pct | Interior, median | Peak speed bias |
+|---|---|---|---|---|---|
+| none | before 0.5.0 | 45 | 147 | 1.6 | −4% |
+| none | 0.5.0 | 11 | 56 | 1.3 | −1% |
+| 1 px | before 0.5.0 | 209 | 640 | 50 | +9% |
+| 1 px | 0.5.0 | 124 | 322 | 49 | +4% |
+| 2 px | before 0.5.0 | 407 | 1213 | 100 | +29% |
+| 2 px | 0.5.0 | 248 | 638 | 98 | +10% |
+
+On five real sessions (Verification) positions are unchanged (median 0.01 px), interior speeds
+are identical (median ratio 1.000) and edge speeds move by −4.5% to +5.6% per session, in
+neither direction consistently. In both versions edge speeds are 2-3 times less accurate than
+interior ones, and peak speed falls on an edge frame in 49-96% of movements, so `peak_speed`
+largely measures the tongue as tracking begins or ends; it is also biased up by noise (the
+largest of noisy values).
 
 ### Dynamic foraging task module
 
 - Frame times: `video_timing_qc.correct_video_timing` (with the trigger log when present);
   `ValueError` when the verdict is not `use`.
-- Clock: session time, seconds from the first go cue; `time_zero` from the trials table
-  (`goCue_start_time - goCue_start_time_in_session`).
-- Licks belong to the movement and the submovement they fall in, within `lick_tolerance_s`
-  (0.01 s): `licks` gets `movement_id` and `submovement_id`; both segment tables get `n_licks`
-  and the first lick's details (`match_licks`).
+- Clock: session time, seconds from the first go cue; `time_zero` is the first go cue's Harp
+  time from the NWB trials (`load_nwb_tables`, as before 0.5.0). The data-utils trials table
+  has only `goCue_start_time_in_session`.
+- Licks belong to the movement (and submovement) they fall inside, within half a frame
+  (`lick_tolerance_s`, default `0.5 / fs_hz` = 1 ms): `licks` gets `movement_id` and
+  `submovement_id`; both segment tables get `n_licks` and the first matched lick's details
+  (`match_licks`). This is the rule before 0.5.0: the old code matched a lick to its nearest
+  frame (within 1 ms at 500 Hz; its 10 ms tolerance only mattered across dropped frames) and
+  took that frame's movement. A lick is the tongue on the spout, so it must fall inside a
+  tracked movement; the only allowed slack is timing between lickometer and camera. Licks just
+  outside are misses for coverage, but are kept: `closest_movement_id` and
+  `closest_movement_offset_s` (0 inside, negative before the movement's start, positive after
+  its end), the same for submovements, so a looser rule can be applied later.
+  Revision 3 briefly matched within 10 ms of either end; on Code Ocean that raised one session's
+  coverage from 0.83 to 0.95 (below).
 - `run_batch(screen=...)` takes the `video_screen` table and skips sessions whose camera is not
   in use (`excluded: <reason>`) or was not screened.
 - Movements get `trial` (last go cue at or before the start), `go_cue_time`,
@@ -198,7 +235,8 @@ near movement edges.
   first_movement_latency, cue_response_movement_id, cue_response_movement_number, lick_latency,
   n_licks, lick_coverage`.
 - Record adds `clock`, `frames`, `timing`, `quality` (`n_licks, n_licks_in_movement,
-  lick_coverage, movement_duration_p50`). Read with `quality_summary(session_dir)`.
+  lick_coverage, lick_coverage_within_10ms, movement_duration_p50`). A gap between the two
+  coverages means licks sit just outside tracked movements. Read with `quality_summary(session_dir)`.
 - Output folder `<out_root>/<session>/`: `pose, kinematics, landmarks, movements, submovements,
   bouts, trials, licks, events` (parquet) and `record.json` (written last; its presence means
   done).
@@ -213,7 +251,7 @@ near movement edges.
 | `tongue_movs.parquet` | `movements.parquet` (+ `submovements`, `bouts`) |
 | `kps_raw_<kp>.parquet` | `pose.parquet` (raw, long) and `landmarks.parquet` |
 | `tongue_trials.parquet`, `nwb_df_trials.parquet` | `trials.parquet` |
-| `nwb_df_licks.parquet` | `licks.parquet` (`movement_id` replaces `nearest_movement_id`) |
+| `nwb_df_licks.parquet` | `licks.parquet`: `movement_id` replaces `nearest_movement_id` (same rule); new `closest_movement_id`, `closest_movement_offset_s` (and for submovements) |
 | `nwb_df_events.parquet` | `events.parquet` |
 | `tongue_quality_stats.json` | `record.json` → `quality` |
 | `batch_error_log.txt` | `errors.txt` |
@@ -273,7 +311,7 @@ two jaw estimates.
 
 Run with `kinematics_analysis/.venv-fip` (Python 3.12, pandas 2.3, numpy 2.0, scipy 1.13).
 
-- **Tests**: `python -m unittest discover` — 187 tests pass (2026-10-27), 64 of them in the new kinematics test files, for
+- **Tests**: `python -m unittest discover` — 189 tests pass (2026-10-27), 66 of them in the new kinematics test files, for
   the kinematics core and task module. New modules are at 97–100% line coverage; flake8 and
   interrogate (100%) pass on them. With `video_clip_utils` removed, nothing in the
   package imports `cv2` or `moviepy`, so the import test and
@@ -294,9 +332,30 @@ Run with `kinematics_analysis/.venv-fip` (Python 3.12, pandas 2.3, numpy 2.0, sc
   each session's movements (matched by start and end time), mapped features (median and 99th
   percentile relative difference), lick matches and coverage. Tested on outputs built to match;
   to be run on Code Ocean.
-- **Not run**: end to end on raw inputs (LP CSV + video CSV + trigger log + NWB). Those are on
-  Code Ocean only. `run_session` and `run_batch` are tested on simulated files with the NWB calls
-  mocked.
+- **Code Ocean, end to end on raw inputs** (2026-10-27, revision 3 code, commit `3eaa746`):
+  five sessions from `pred_csv_list_20250113.json` run through `run_batch_analysis` (v0.4.0, the
+  capsule image) and `run_batch` (this branch, through `PYTHONPATH`), then compared:
+  - Movements identical in every session (7,393 / 6,914 / 6,650 / 6,472 / 6,371: same count,
+    start and end times, duration, valid frames). Matched lick times identical.
+  - Smoothing: see Smoothing above (positions 0.01 px, interior speeds equal, edges ±5%).
+  - Jaw reference moved 2.9-5.7 px in every session (always +x, +y: the old mean included
+    low-confidence points); angles changed by a median of 2.6-5.0°.
+  - Licks: with the 10 ms rule of revision 3, coverage rose in two sessions. Where licks fall
+    relative to movements:
+
+    | Session | Licks | Inside | 0-10 ms before a start | 0-10 ms after an end | Farther |
+    |---|---|---|---|---|---|
+    | 716325 2024-05-31 | 5,846 | 5,833 | 2 | 1 | 10 |
+    | 717259 2024-06-28 | 6,166 | 5,275 | 51 | 15 | 825 |
+    | 717263 2024-07-24 | 5,092 | 4,150 | 614 | 76 | 252 |
+    | 751004 2024-12-20 | 5,269 | 5,237 | 0 | 0 | 32 |
+    | 751004 2024-12-21 | 5,782 | 5,715 | 2 | 1 | 64 |
+
+    In 717263, 614 licks land up to 10 ms *before* a tracked movement starts: the tracker picks
+    the tongue up late, or the lickometer and camera clocks are offset by a few ms. Either way
+    movement onsets there may be late. The strict rule (revision 4) counts them as missed and
+    keeps their offsets. Old coverage 0.827 equals "inside" plus about half of the licks within
+    2 ms of an edge, confirming the old rule was inside-within-a-frame.
 
 ## Follow-ups
 
@@ -315,6 +374,10 @@ Run with `kinematics_analysis/.venv-fip` (Python 3.12, pandas 2.3, numpy 2.0, sc
 
 ## Changes
 
+- Revision 4 (2026-10-27): strict lick matching restored (half a frame) with
+  `closest_<kind>_id` / `closest_<kind>_offset_s` kept; `lick_coverage_within_10ms`; clock from
+  the NWB trials' first go cue; Code Ocean results and the smoothing simulation recorded;
+  comparison script reports angles in degrees, jaw shift and per-lick agreement.
 - Revision 3 (2026-10-27): submovements keep every reversal (no merging by default); pieces
   carry `<column>_sum` and `<column>_peak`; merging planned as its own step.
 - Revision 2 (2026-10-26): submovements get movement features and lick matches; `min_samples=5`
