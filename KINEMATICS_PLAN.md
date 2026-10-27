@@ -356,6 +356,18 @@ Run with `kinematics_analysis/.venv-fip` (Python 3.12, pandas 2.3, numpy 2.0, sc
     movement onsets there may be late. The strict rule (revision 4) counts them as missed and
     keeps their offsets. Old coverage 0.827 equals "inside" plus about half of the licks within
     2 ms of an edge, confirming the old rule was inside-within-a-frame.
+  - Rerun with revision 4 (commit `0a5ea95`): lick coverage equals the old value in all five
+    sessions, and every lick is matched to the same movement as before except one in 717263 (at
+    the half-frame boundary). 7-68 movements per session whose first frame was farthest from the
+    old jaw now reach farthest later (old `out_duration` 0, new not).
+  - **717263 is late tracking, not a clock offset.** In the 5 frames before movements with an
+    early lick, confidence is 0.5-0.9 in 52% of frames (median 0.52) with the tongue 49 px from
+    the jaw: visible, just under the 0.9 cutoff. In 717263 and 717259 tracked movements start
+    ~40 px from the jaw, against 24 px in 716325 (amplitudes 56-63 px). A clock offset would
+    move licks earlier relative to the farthest point, which tracking onset does not affect;
+    licks there are 27.5 ms before it in 717263 against 36-41 ms in the other two. So where
+    the tracker is less confident, movement onsets (and latencies) are late. This predates
+    0.5.0.
 
 ## Follow-ups
 
@@ -370,6 +382,10 @@ Run with `kinematics_analysis/.venv-fip` (Python 3.12, pandas 2.3, numpy 2.0, sc
 - A `flip_x`/`flip_y` choice for the bottom camera so +x is the same side in every rig (needs
   the rig geometry; left as False).
 - A separate merge step for submovements, once the rule is decided (see Segmentation methods).
+- Late movement onsets where tracker confidence is low (717263 above): consider two confidence
+  levels, like `above_threshold` (a movement starts where confidence first passes ~0.5 and must
+  reach 0.9 somewhere), checked against lick timing and against wrong-body-part detections,
+  since confidence alone is not a valid noise filter.
 - Move `kinematics/` to its own package once a second project uses it.
 
 ## Changes
