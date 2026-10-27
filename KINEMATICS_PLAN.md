@@ -273,7 +273,7 @@ two jaw estimates.
 
 Run with `kinematics_analysis/.venv-fip` (Python 3.12, pandas 2.3, numpy 2.0, scipy 1.13).
 
-- **Tests**: `python -m unittest discover` — 186 tests pass (2026-10-26), 60 of them new for
+- **Tests**: `python -m unittest discover` — 187 tests pass (2026-10-27), 64 of them in the new kinematics test files, for
   the kinematics core and task module. New modules are at 97–100% line coverage; flake8 and
   interrogate (100%) pass on them. With `video_clip_utils` removed, nothing in the
   package imports `cv2` or `moviepy`, so the import test and
