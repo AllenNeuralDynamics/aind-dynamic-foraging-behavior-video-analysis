@@ -1,5 +1,7 @@
 """Tests for kinematics.pipeline and kinematics.tasks."""
 
+import importlib.util
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -248,6 +250,19 @@ class TaskTest(unittest.TestCase):
                               .where(licks["movement_id"].notna(), None)),
                          [9, 10, None, 19])
 
+    def test_submovements_get_licks_and_features(self):
+        sub = self.result["submovements"]
+        for c in ("amplitude", "out_duration", "n_licks", "lick_time"):
+            self.assertIn(c, sub)
+        licks = self.result["licks"]
+        matched = licks.dropna(subset=["submovement_id"])
+        self.assertEqual(len(matched), 3)  # the same licks as movements
+        parent = sub.set_index("submovement_id")["movement_id"]
+        self.assertEqual(
+            list(parent.loc[matched["submovement_id"].astype(int)]),
+            list(matched["movement_id"].astype(int)))
+        self.assertEqual(int(sub["n_licks"].sum()), 3)
+
     def test_trial_summary_and_quality(self):
         tr = self.result["trials"].set_index("trial")
         self.assertEqual(tr.loc[1, "n_movements"], 10)
@@ -310,6 +325,48 @@ class TaskTest(unittest.TestCase):
         self.assertEqual(ev, "events")
         self.assertEqual(calls, [{"cut_interruptions": True}, {}])
 
+    def test_compare_old_new_script(self):
+        path = Path(__file__).parents[1] / "scripts" / \
+            "compare_old_new_kinematics.py"
+        spec = importlib.util.spec_from_file_location("cmp", path)
+        cmp = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cmp)
+        root = Path(self.tmp.name) / "cmp"
+        new_dir = root / "new" / SESSION
+        pl.write(self.result, new_dir)
+        mv = self.result["movements"]
+        jaw = self.result["landmarks"].set_index("keypoint").loc["jaw"]
+        old = pd.DataFrame({
+            "start_time": mv["start_time"], "end_time": mv["end_time"],
+            "duration": mv["duration"], "n_datapoints": mv["n_valid"],
+            "total_distance": mv["path_length"],
+            "peak_velocity": mv["peak_speed"] * 1.01,
+            "endpoint_x": mv["end_x"] + jaw["x"],
+            "has_lick": mv["n_licks"] > 0})
+        inter = root / "old" / SESSION / "intermediate_data"
+        inter.mkdir(parents=True)
+        old.to_parquet(inter / "tongue_movs.parquet")
+        licks = self.result["licks"].rename(
+            columns={"movement_id": "nearest_movement_id"})
+        licks.to_parquet(inter / "nwb_df_licks.parquet")
+        (inter.parent / "tongue_quality_stats.json").write_text(
+            json.dumps({"coverage_pct": 75.0}))
+        (root / "old" / "behavior_1_2025-01-01_00-00-00").mkdir()
+        table = cmp.compare_roots(root / "old", root / "new")
+        rows = table[table["session"] == SESSION].set_index("item")
+        self.assertEqual(rows.loc["movements matched", "note"],
+                         "100.00% of old")
+        self.assertEqual(rows.loc["duration", "note"],
+                         "median 0.00%, p99 0.00%")
+        self.assertTrue(rows.loc["peak_velocity", "note"]
+                        .startswith("median 0.99%"))
+        self.assertEqual(rows.loc["endpoint_x", "note"],
+                         "median 0.00%, p99 0.00%")
+        self.assertEqual(rows.loc["has_lick", "note"], "100.00% agree")
+        self.assertEqual(rows.loc["lick coverage", "old"],
+                         rows.loc["lick coverage", "new"])
+        self.assertEqual(rows.loc["quality lick_coverage", "new"], 0.75)
+
     def test_run_batch(self):
         tables = (self.trials, self.licks, pd.DataFrame({"event": ["x"]}))
         out = Path(self.tmp.name) / "out"
@@ -325,6 +382,20 @@ class TaskTest(unittest.TestCase):
             strict = dft.run_batch([self.pose_path], self.data_root, out,
                                    use_trigger_log=True, force=True)
             self.assertIn("Event_94", strict["status"].iloc[0])
+            screen = pd.DataFrame({
+                "session": [SESSION, "behavior_999999_2025-01-01_10-00-00"],
+                "camera": ["bottom_camera", "bottom_camera"],
+                "use": [False, True],
+                "reason": ["timing: exclude: no_frames_lost", ""]})
+            gated = dft.run_batch([self.pose_path, bad, self.pose_path],
+                                  self.data_root, out, force=True,
+                                  screen=screen, camera="SideCamera")
+            self.assertEqual(list(gated["status"]),
+                             ["excluded: not screened"] * 3)
+            gated = dft.run_batch([self.pose_path], self.data_root, out,
+                                  force=True, screen=screen)
+            self.assertEqual(list(gated["status"]),
+                             ["excluded: timing: exclude: no_frames_lost"])
         q = dft.quality_summary(out / SESSION)
         self.assertEqual(q["session"], SESSION)
         self.assertAlmostEqual(q["lick_coverage"], 0.75)

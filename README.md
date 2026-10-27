@@ -360,12 +360,16 @@ frames.
   `kinematics.tasks.dynamic_foraging_tongue`. Output files and columns are
   renamed; the full old → new map is in `KINEMATICS_PLAN.md`. Movements are
   identical; measured features match to float precision on a real session.
+  `scripts/compare_old_new_kinematics.py` compares old and new batch
+  outputs.
 - **Changed behavior:** smoothing runs per tracked run, so nothing is
   interpolated across long gaps; positions in features are relative to the
   session's median jaw position (was the mean of all jaw points);
   movements spanning a go cue keep their trial and get `spans_go_cue`.
 - **New:** any number of keypoints with their own settings; segmentation
-  for always-visible parts, submovements, bouts; spectrum features;
+  for always-visible parts, submovements (with features and lick matches;
+  reversals of at least 5 frames), bouts; spectrum features;
+  `run_batch(screen=...)` skips cameras the video screen excludes;
   DeepLabCut, SLEAP and ndx-pose readers; `record.json` with settings,
   versions, clock and timing verdict.
 - **Removed:** QC figures, `select_percentile_movements`,

@@ -151,6 +151,13 @@ class ZeroCrossingsTest(unittest.TestCase):
         self.assertEqual(labels(iv, n), [1] * 7 + [2] * 3)
         self.assertEqual(list(iv["direction"]), [1, -1])
 
+    def test_merged_blip_keeps_direction(self):
+        # a 1-frame spike of the other sign at the end (the tongue back at
+        # the jaw) merges into the retraction without flipping it
+        iv, n = self.run_([2, 2, 2, -2, -2, -2, 5.0], min_samples=2)
+        self.assertEqual(labels(iv, n), [1, 1, 1, 2, 2, 2, 2])
+        self.assertEqual(list(iv["direction"]), [1, -1])
+
     def test_min_samples_drop(self):
         iv, n = self.run_([1, 1, -1, 1, 1.0], min_samples=2, short="drop")
         self.assertEqual(labels(iv, n), [1, 1, None, 2, 2])

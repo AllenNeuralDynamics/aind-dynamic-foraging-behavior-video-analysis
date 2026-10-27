@@ -9,15 +9,15 @@ files, clock and events:
 * **Clock**: session time, seconds from the first go cue (the clock of the
   NWB ``*_in_session`` trial columns and lick ``timestamps``). The record
   keeps ``time_zero``, the Harp time of session time 0.
-* **Events**: licks are matched to the movement they fall in; each
-  movement gets its trial (last go cue at or before it starts) and lick
-  details; each trial gets a summary of its movements.
+* **Events**: licks are matched to the movement and the submovement they
+  fall in; each movement gets its trial (last go cue at or before it
+  starts) and lick details; each trial gets a summary of its movements.
 
 Outputs (``pipeline.write``): ``pose, kinematics, landmarks, movements,
 submovements, bouts`` as in ``pipeline``, plus ``trials`` (the NWB trials
 table with movement summaries), ``licks`` (the NWB licks table with
-``movement_id``), ``events`` when given, and ``record.json`` with the
-timing verdict and ``quality`` (``lick_coverage``,
+``movement_id`` and ``submovement_id``), ``events`` when given, and
+``record.json`` with the timing verdict and ``quality`` (``lick_coverage``,
 ``movement_duration_p50``). Read with ``pipeline.read`` and
 ``quality_summary``.
 """
@@ -55,9 +55,12 @@ TONGUE_SETTINGS = pl.Settings(
                 "movement": pl.Segmentation(
                     "tracked_runs", {"max_gap_frames": 10},
                     features=("path", "excursion", "outbound")),
+                # 5 frames = 10 ms, half a period at the 50 Hz cutoff: the
+                # shortest reversal the smoothed signal can resolve.
                 "submovement": pl.Segmentation(
-                    "zero_crossings", {"max_gap_frames": 3},
-                    within="movement", features=("path",)),
+                    "zero_crossings", {"max_gap_frames": 3, "min_samples": 5},
+                    within="movement",
+                    features=("path", "excursion", "outbound")),
                 "bout": pl.Segmentation(
                     "bouts", {"of": "movement", "max_gap_s": 0.5,
                               "min_count": 2}),
@@ -65,9 +68,11 @@ TONGUE_SETTINGS = pl.Settings(
         ),
     ),
 )
-"""Settings matching the pipeline before 0.5.0: confidence 0.9, 50 Hz
-4th-order low-pass, movements bridging up to 10 missing frames, positions
-relative to the session's median jaw position."""
+"""Settings matching the pipeline before 0.5.0 (confidence 0.9, 50 Hz
+4th-order low-pass, movements bridging up to 10 missing frames), positions
+relative to the session's median jaw position, submovements split at
+reversals of radial velocity lasting at least 5 frames, and bouts of
+movements less than 0.5 s apart."""
 
 
 # --- Finding files ----------------------------------------------------------
@@ -102,8 +107,8 @@ def find_inputs(session_dir, camera="BottomCamera") -> dict:
     if videos is None:
         raise FileNotFoundError(
             f"no behavior-videos folder in {session_dir}")
-    snake = re.sub(r"(?<!^)([A-Z])", r"_\1", camera).lower()
-    for csv in (videos / camera / "metadata.csv", videos / f"{snake}.csv"):
+    for csv in (videos / camera / "metadata.csv",
+                videos / f"{_snake(camera)}.csv"):
         if csv.exists():
             break
     else:
@@ -208,29 +213,61 @@ def annotate_movements(movements, trials, licks, lick_tolerance_s=0.01):
         mv.groupby("trial").cumcount().to_numpy() + 1, dtype="Int64")
     mv.loc[~has, "number_in_trial"] = pd.NA
 
-    lk = licks.copy()
-    t_lick = lk["timestamps"].to_numpy(float)
-    hit = interval_of(t_lick, st - lick_tolerance_s, en + lick_tolerance_s)
-    ids = mv["movement_id"].to_numpy()
-    lk["movement_id"] = pd.array(np.where(hit >= 0, ids[hit], 0),
-                                 dtype="Int64")
-    lk.loc[hit < 0, "movement_id"] = pd.NA
+    mv, lk = match_licks(mv, licks, "movement_id", lick_tolerance_s)
+    return mv.sort_index(), lk
 
-    matched = lk[hit >= 0].assign(lick_side=lambda d: _lick_side(
-        d["event"]) if "event" in d else pd.NA)
-    first = (matched.sort_values("timestamps")
-             .groupby("movement_id").first())
-    mv["n_licks"] = (mv["movement_id"].map(
-        matched.groupby("movement_id").size()).fillna(0).astype(int))
-    mv["lick_time"] = mv["movement_id"].map(first["timestamps"])
+
+def match_licks(segments, licks, id_col, lick_tolerance_s=0.01):
+    """Match each lick to the segment it falls in.
+
+    Parameters
+    ----------
+    segments : pandas.DataFrame
+        ``id_col, start_time, end_time``, not overlapping (e.g. movements
+        or submovements of one keypoint).
+    licks : pandas.DataFrame
+        ``timestamps``; ``cue_response``, ``rewarded`` and ``event`` are
+        carried over when present.
+    id_col : str
+        Segment id column; licks get a column of that name.
+    lick_tolerance_s : float
+        A lick belongs to a segment if it is within this much of it.
+
+    Returns
+    -------
+    segments : pandas.DataFrame
+        Adds ``n_licks`` and, from the first lick, ``lick_time``,
+        ``cue_response``, ``rewarded`` (False without a lick) and
+        ``lick_side``.
+    licks : pandas.DataFrame
+        Adds ``id_col`` (NA when no segment).
+    """
+    seg = segments.sort_values("start_time", kind="stable").copy()
+    st = seg["start_time"].to_numpy(float)
+    en = seg["end_time"].to_numpy(float)
+    lk = licks.copy()
+    hit = interval_of(lk["timestamps"].to_numpy(float),
+                      st - lick_tolerance_s, en + lick_tolerance_s)
+    ids = seg[id_col].to_numpy()
+    lk[id_col] = pd.array(np.where(hit >= 0, ids[np.maximum(hit, 0)], 0),
+                          dtype="Int64")
+    lk.loc[hit < 0, id_col] = pd.NA
+
+    matched = lk[hit >= 0]
+    if "event" in matched:
+        matched = matched.assign(lick_side=_lick_side(matched["event"]))
+    first = matched.sort_values("timestamps").groupby(id_col).first()
+    seg["n_licks"] = (seg[id_col].map(matched.groupby(id_col).size())
+                      .fillna(0).astype(int))
+    seg["lick_time"] = seg[id_col].map(first["timestamps"])
     for col in ("cue_response", "rewarded"):
         if col in first:
-            mv[col] = mv["movement_id"].map(
+            seg[col] = seg[id_col].map(
                 first[col].astype("boolean")).astype("boolean")
-            mv.loc[mv["n_licks"] == 0, col] = False
-    mv["lick_side"] = mv["movement_id"].map(
+            seg.loc[seg["n_licks"] == 0, col] = False
+    seg["lick_side"] = seg[id_col].map(
         first.get("lick_side", pd.Series(dtype="string"))).astype("string")
-    return mv.sort_index(), lk
+    return seg.sort_index(), lk
 
 
 def summarize_trials(trials, movements, licks):
@@ -331,6 +368,10 @@ def run_session(pose_path, video_csv, trials, licks, trigger_log=None,
     result = pl.process(pose, settings, session=session)
     result["movements"], result["licks"] = annotate_movements(
         result["movements"], trials, licks, lick_tolerance_s)
+    if "submovements" in result:
+        result["submovements"], result["licks"] = match_licks(
+            result["submovements"], result["licks"], "submovement_id",
+            lick_tolerance_s)
     result["trials"] = summarize_trials(trials, result["movements"],
                                         result["licks"])
     if events is not None:
@@ -378,20 +419,42 @@ def load_nwb_tables(session, nwb_folder=None):
     return nwb.df_trials, licks, nwb.df_events
 
 
+def _snake(camera):
+    """``BottomCamera`` -> ``bottom_camera`` (the screen's camera names)."""
+    return re.sub(r"(?<!^)([A-Z])", r"_\1", camera).lower()
+
+
+def screen_status(screen, session, camera):
+    """None if ``screen`` allows the session's camera, else why not.
+
+    ``screen`` is the ``video_screen`` table (``load_screen``): one row per
+    session x camera with ``use`` and ``reason``.
+    """
+    rows = screen[(screen["session"] == session)
+                  & (screen["camera"] == _snake(camera))]
+    if rows.empty:
+        return "excluded: not screened"
+    if not bool(rows["use"].iloc[0]):
+        return f"excluded: {rows['reason'].iloc[0]}"
+    return None
+
+
 def run_batch(pose_paths, data_root, out_root, settings=TONGUE_SETTINGS,
               camera="BottomCamera", use_trigger_log=None, force=False,
-              nwb_folder=None):
+              nwb_folder=None, screen=None):
     """Process many sessions into ``<out_root>/<session>/``.
 
     A session already written is skipped unless ``force``. Errors are
     printed, collected in ``<out_root>/errors.txt`` and do not stop the
     batch. ``use_trigger_log``: None uses it when present, True requires
-    it, False ignores it.
+    it, False ignores it. ``screen`` (``video_screen.load_screen``), when
+    given, excludes sessions whose camera is not in use or not screened.
 
     Returns
     -------
     pandas.DataFrame
-        ``session, status`` ('done', 'skipped' or 'error: ...').
+        ``session, status`` ('done', 'skipped', 'excluded: ...' or
+        'error: ...').
     """
     out_root = Path(out_root)
     out_root.mkdir(parents=True, exist_ok=True)
@@ -401,6 +464,11 @@ def run_batch(pose_paths, data_root, out_root, settings=TONGUE_SETTINGS,
         out_dir = out_root / session
         if pl.is_done(out_dir) and not force:
             rows.append({"session": session, "status": "skipped"})
+            continue
+        excluded = (None if screen is None
+                    else screen_status(screen, session, camera))
+        if excluded:
+            rows.append({"session": session, "status": excluded})
             continue
         try:
             files = find_inputs(Path(data_root) / session, camera)

@@ -1,6 +1,6 @@
 # Plan: kinematics — from tracker output to tidy tables
 
-> **Status: revision 1 (2026-10-26), implemented on branch `feat/kinematics-core`, not released.**
+> **Status: revision 2 (2026-10-26), implemented on branch `feat/kinematics-core`, not released.**
 > Replaces `kinematics/tongue_analysis.py` and `kinematics/tongue_kinematics_utils.py` with a
 > general core (`kinematics/`) and one task module (`kinematics/tasks/dynamic_foraging_tongue.py`).
 > A clean break: output files and column names change (map below); `kinematics_analysis` updates
@@ -78,8 +78,36 @@ The core imports numpy, pandas and scipy only. `kinematics/__init__.py` imports 
 | `bouts` | Group segments that follow each other closely | `of`, `max_gap_s`, `min_count` |
 
 `within` nests one kind inside another (submovements within movements). `zero_crossings` and
-`speed_minima` are the uncommitted `feat/submovements` work, ported with behavior unchanged and
-its tests carried over.
+`speed_minima` are the uncommitted `feat/submovements` work, ported with its tests carried over.
+Compared with that code on 14,400 random cases (both methods, nested and standalone, gap,
+deadband, minimum length, merge or drop), every frame's id, number and direction match, except
+in one place, changed on purpose (revision 2):
+
+- **Direction of a piece that absorbed a short one.** The original took the sign of the piece's
+  largest sample, so a 1-frame blip merged into a retraction could flip it to +1 and fuse it
+  with the protrusion. This is common at the end of a lick, where the tongue is back at the jaw
+  and radial velocity is unreliable. Direction is now the sign of the sum of the piece's values
+  outside the deadband. Unmerged pieces are unchanged; the 1,240 differing cases are all
+  `zero_crossings` with `min_samples > 1` and `short="merge"`.
+
+**Submovement defaults** (`TONGUE_SETTINGS`), from session
+`behavior_716325_2024-05-31_10-31-14` (7,393 movements, radial velocity from the old filtered
+positions):
+
+| `min_samples` | Pieces per movement | Out then back | Out then back, lick movements | One piece | 3+ pieces |
+|---|---|---|---|---|---|
+| 1 | 3.57 | 32.2% | 34.6% | 1.8% | 64.9% |
+| 3 | 2.88 | 54.7% | 56.9% | 3.1% | 41.6% |
+| **5** | **2.43** | **71.5%** | **74.5%** | **4.1%** | **23.9%** |
+| 8 | 2.08 | 85.1% | 90.6% | 6.3% | 8.1% |
+
+`min_samples=5` (10 ms) is the shortest reversal the 50 Hz smoothing can resolve (half its
+period), so it is the default. Longer minimums remove more pieces, but those are reversals the
+signal does resolve; most are a second out-and-back within one tracked movement
+(`(1, -1, 1, -1)`: 1,146 movements at 5 frames). Whether those are real double pumps is a
+scientific question, left open. A deadband barely matters (up to 200 px/s changes the
+out-then-back share by under 4 points at 5 frames; median |radial velocity| is 602 px/s), so it
+stays 0. Submovements get the same feature groups as movements and their own lick matches.
 
 ### Feature groups
 
@@ -143,7 +171,11 @@ near movement edges.
   `ValueError` when the verdict is not `use`.
 - Clock: session time, seconds from the first go cue; `time_zero` from the trials table
   (`goCue_start_time - goCue_start_time_in_session`).
-- Licks belong to the movement they fall in, within `lick_tolerance_s` (0.01 s).
+- Licks belong to the movement and the submovement they fall in, within `lick_tolerance_s`
+  (0.01 s): `licks` gets `movement_id` and `submovement_id`; both segment tables get `n_licks`
+  and the first lick's details (`match_licks`).
+- `run_batch(screen=...)` takes the `video_screen` table and skips sessions whose camera is not
+  in use (`excluded: <reason>`) or was not screened.
 - Movements get `trial` (last go cue at or before the start), `go_cue_time`,
   `latency_from_go`, `spans_go_cue`, `number_in_trial`, `n_licks`, and from the first lick
   `lick_time, cue_response, rewarded, lick_side`. `cue_response`/`rewarded` are real booleans.
@@ -225,7 +257,7 @@ two jaw estimates.
 
 Run with `kinematics_analysis/.venv-fip` (Python 3.12, pandas 2.3, numpy 2.0, scipy 1.13).
 
-- **Tests**: `python -m unittest discover` — 183 tests pass (2026-10-26), 57 of them new for
+- **Tests**: `python -m unittest discover` — 186 tests pass (2026-10-26), 60 of them new for
   the kinematics core and task module. New modules are at 97–100% line coverage; flake8 and
   interrogate (100%) pass on them. `test_video_clips.ExtractTrialClipTest` and the import test
   need `cv2`/`moviepy`, absent in that environment (as on `main`); they pass with stand-in
@@ -242,6 +274,10 @@ Run with `kinematics_analysis/.venv-fip` (Python 3.12, pandas 2.3, numpy 2.0, sc
   - Smoothing is not compared: the old frame table holds only filtered positions.
 - **Speed**: `process` with `TONGUE_SETTINGS` on that session takes 36 s (7,393 movements,
   22,526 submovements, 971 bouts).
+- **Old vs new batch**: `scripts/compare_old_new_kinematics.py <old_root> <new_root>` compares
+  each session's movements (matched by start and end time), mapped features (median and 99th
+  percentile relative difference), lick matches and coverage. Tested on outputs built to match;
+  to be run on Code Ocean.
 - **Not run**: end to end on raw inputs (LP CSV + video CSV + trigger log + NWB). Those are on
   Code Ocean only. `run_session` and `run_batch` are tested on simulated files with the NWB calls
   mocked.
@@ -254,7 +290,6 @@ Run with `kinematics_analysis/.venv-fip` (Python 3.12, pandas 2.3, numpy 2.0, sc
   `kin_utils.load_kps_raw` / `jaw_position` (→ `landmarks.parquet`), `val_02`/`val_03`,
   `model_quality`, `tongue_movements_all`, and notebooks using the renamed columns.
 - QC figures (confidence, lick coverage, example clips) as a small task-side module.
-- `run_batch(screen=...)` gate from `video_screen` (`VIDEO_SCREEN_PLAN.md`).
 - Spout distance per frame and pose-derived lick detection (`tongue_lickometer_utils`) as
   `above_threshold` on distance to a landmark.
 - A `flip_x`/`flip_y` choice for the bottom camera so +x is the same side in every rig (needs
@@ -263,4 +298,7 @@ Run with `kinematics_analysis/.venv-fip` (Python 3.12, pandas 2.3, numpy 2.0, sc
 
 ## Changes
 
+- Revision 2 (2026-10-26): submovements get movement features and lick matches; `min_samples=5`
+  default from a real session; direction from the summed signal; `run_batch(screen=...)`;
+  `scripts/compare_old_new_kinematics.py`.
 - Revision 1 (2026-10-26): first design and implementation.

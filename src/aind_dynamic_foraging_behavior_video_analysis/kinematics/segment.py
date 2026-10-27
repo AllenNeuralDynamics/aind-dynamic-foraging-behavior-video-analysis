@@ -132,17 +132,20 @@ def _merge_short_segments(starts, lengths, blocks, min_samples):
 
 
 def _segment_directions(seg, vals, deadband):
-    """Per segment (seg >= 0, in order), the sign of the sample with the
-    largest |value|, or 0 if that is within the deadband."""
+    """Per segment (seg >= 0, in order): the sign of the sum of its values
+    outside the deadband (its net motion along the signal), or 0 if none is
+    outside it.
+
+    The sum, not the largest sample, so a short blip merged into a segment
+    cannot flip its direction; values inside the deadband are left out, so
+    an unmerged segment's direction is the sign it was split on.
+    """
     kept = seg >= 0
-    seg_k, vals_k = seg[kept], np.abs(vals[kept])
+    seg_k, vals_k = seg[kept], vals[kept]
     first = np.flatnonzero(np.r_[True, seg_k[1:] != seg_k[:-1]])
-    peak = np.array([b0 + np.argmax(vals_k[b0:b1]) for b0, b1
-                     in zip(first, np.append(first[1:], len(seg_k)))],
-                    dtype=np.int64)
-    peak_vals = vals[kept][peak]
-    return np.where(np.abs(peak_vals) > deadband,
-                    np.sign(peak_vals), 0).astype(np.int64)
+    strong = np.where(np.abs(vals_k) > deadband, vals_k, 0.0)
+    total = np.add.reduceat(strong, first)
+    return np.sign(total).astype(np.int64)
 
 
 def _split_starts(vals, hard, block, method, deadband, min_prominence,
@@ -260,7 +263,7 @@ def zero_crossings(values, within=None, deadband=0.0, max_gap_frames=3,
     -------
     pandas.DataFrame
         Intervals table with ``within`` and ``direction`` (sign of the
-        frame with the largest |value|, 0 inside the deadband).
+        piece's summed values outside the deadband; 0 if there are none).
     """
     return _split(values, within, "zero_crossing", max_gap_frames, deadband,
                   None, None, min_samples, short)
