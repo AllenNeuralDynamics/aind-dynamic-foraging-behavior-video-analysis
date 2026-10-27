@@ -1,6 +1,6 @@
 # Plan: kinematics — from tracker output to tidy tables
 
-> **Status: revision 2 (2026-10-26), implemented on branch `feat/kinematics-core`, not released.**
+> **Status: revision 3 (2026-10-27), implemented on branch `feat/kinematics-core`, not released.**
 > Replaces `kinematics/tongue_analysis.py` and `kinematics/tongue_kinematics_utils.py` with a
 > general core (`kinematics/`) and one task module (`kinematics/tasks/dynamic_foraging_tongue.py`).
 > A clean break: output files and column names change (map below); `kinematics_analysis` updates
@@ -90,24 +90,39 @@ in one place, changed on purpose (revision 2):
   outside the deadband. Unmerged pieces are unchanged; the 1,240 differing cases are all
   `zero_crossings` with `min_samples > 1` and `short="merge"`.
 
-**Submovement defaults** (`TONGUE_SETTINGS`), from session
-`behavior_716325_2024-05-31_10-31-14` (7,393 movements, radial velocity from the old filtered
-positions):
+**Submovement defaults** (`TONGUE_SETTINGS`): every reversal of radial velocity is kept, with no
+minimum length and no deadband, so nothing is merged or fused and no decision is made about
+which pieces are real. Each piece carries `radial_velocity_sum` (its net motion along the
+axis) and `radial_velocity_peak` (signed value farthest from 0) next to `n_frames` and
+`direction`, so pieces can be filtered or merged later without rereading frames. Pieces of 1
+frame have NaN path measurements.
+
+What a minimum length would do, on session `behavior_716325_2024-05-31_10-31-14` (7,393
+movements, radial velocity from the old filtered positions, new direction rule):
 
 | `min_samples` | Pieces per movement | Out then back | Out then back, lick movements | One piece | 3+ pieces |
 |---|---|---|---|---|---|
-| 1 | 3.57 | 32.2% | 34.6% | 1.8% | 64.9% |
+| **1 (default)** | **3.57** | **32.2%** | **34.6%** | **1.8%** | **64.9%** |
 | 3 | 2.88 | 54.7% | 56.9% | 3.1% | 41.6% |
-| **5** | **2.43** | **71.5%** | **74.5%** | **4.1%** | **23.9%** |
+| 5 | 2.43 | 71.5% | 74.5% | 4.1% | 23.9% |
 | 8 | 2.08 | 85.1% | 90.6% | 6.3% | 8.1% |
 
-`min_samples=5` (10 ms) is the shortest reversal the 50 Hz smoothing can resolve (half its
-period), so it is the default. Longer minimums remove more pieces, but those are reversals the
-signal does resolve; most are a second out-and-back within one tracked movement
-(`(1, -1, 1, -1)`: 1,146 movements at 5 frames). Whether those are real double pumps is a
-scientific question, left open. A deadband barely matters (up to 200 px/s changes the
-out-then-back share by under 4 points at 5 frames; median |radial velocity| is 602 px/s), so it
-stays 0. Submovements get the same feature groups as movements and their own lick matches.
+In movements with 3+ pieces, extra pieces sit at the start (median 6 frames), the end (median 10)
+or the middle (median 9, with a peak at a median 22% of the movement's largest radial
+velocity). The most common pattern after a plain out-and-back (2,384 movements) is a second
+out-and-back within one tracked movement (`(1, -1, 1, -1)`, 1,319). At the ends the tongue is
+near the jaw, where radial velocity is least reliable.
+5 frames (10 ms) is the shortest reversal the 50 Hz smoothing resolves (half its period). A
+deadband barely matters (0 to 200 px/s changes the out-then-back share by 3.3 points at 5
+frames; median |radial velocity| is 602 px/s). Submovements get the same feature groups as
+movements and their own lick matches.
+
+**Merging, when it is decided** (follow-up): a separate step after `zero_crossings`, like
+`bouts`, that groups raw pieces into merged ones and gives each raw piece the merged piece's id.
+Raw pieces stay the saved primary table; the rule is explicit in the settings; the link from raw
+to merged is kept. Its inputs are already saved (`n_frames`, `direction`,
+`radial_velocity_sum`). `min_samples` / `short` in `zero_crossings` and `speed_minima` would
+then be removed, so there is one way to merge.
 
 ### Feature groups
 
@@ -295,10 +310,13 @@ Run with `kinematics_analysis/.venv-fip` (Python 3.12, pandas 2.3, numpy 2.0, sc
   `above_threshold` on distance to a landmark.
 - A `flip_x`/`flip_y` choice for the bottom camera so +x is the same side in every rig (needs
   the rig geometry; left as False).
+- A separate merge step for submovements, once the rule is decided (see Segmentation methods).
 - Move `kinematics/` to its own package once a second project uses it.
 
 ## Changes
 
+- Revision 3 (2026-10-27): submovements keep every reversal (no merging by default); pieces
+  carry `<column>_sum` and `<column>_peak`; merging planned as its own step.
 - Revision 2 (2026-10-26): submovements get movement features and lick matches; `min_samples=5`
   default from a real session; direction from the summed signal; `run_batch(screen=...)`;
   `scripts/compare_old_new_kinematics.py`.

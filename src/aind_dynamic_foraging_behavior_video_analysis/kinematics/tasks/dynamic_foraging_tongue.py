@@ -58,10 +58,11 @@ TONGUE_SETTINGS = pl.Settings(
                 "movement": pl.Segmentation(
                     "tracked_runs", {"max_gap_frames": 10},
                     features=("path", "excursion", "outbound")),
-                # 5 frames = 10 ms, half a period at the 50 Hz cutoff: the
-                # shortest reversal the smoothed signal can resolve.
+                # Every reversal is kept (no minimum length): which pieces
+                # are real is decided downstream, from the saved
+                # radial_velocity_sum / _peak per piece.
                 "submovement": pl.Segmentation(
-                    "zero_crossings", {"max_gap_frames": 3, "min_samples": 5},
+                    "zero_crossings", {"max_gap_frames": 3},
                     within="movement",
                     features=("path", "excursion", "outbound")),
                 "bout": pl.Segmentation(
@@ -73,9 +74,9 @@ TONGUE_SETTINGS = pl.Settings(
 )
 """Settings matching the pipeline before 0.5.0 (confidence 0.9, 50 Hz
 4th-order low-pass, movements bridging up to 10 missing frames), positions
-relative to the session's median jaw position, submovements split at
-reversals of radial velocity lasting at least 5 frames, and bouts of
-movements less than 0.5 s apart."""
+relative to the session's median jaw position, submovements split at every
+reversal of radial velocity (none merged), and bouts of movements less than
+0.5 s apart."""
 
 
 # --- Finding files ----------------------------------------------------------

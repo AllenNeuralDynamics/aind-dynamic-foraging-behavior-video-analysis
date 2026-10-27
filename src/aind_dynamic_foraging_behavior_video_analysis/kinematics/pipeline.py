@@ -11,7 +11,9 @@
     One row per segment: ``<kind>_id, keypoint, start_frame, end_frame,
     start_time, end_time, duration, n_frames, n_valid``; ``<within>_id`` and
     ``number_in_<within>`` for segments inside other segments;
-    ``direction`` for ``zero_crossings``; ``n_<of>s`` and ``rate_hz`` for
+    ``direction`` for ``zero_crossings``; ``<column>_sum`` and
+    ``<column>_peak`` of the split signal for ``zero_crossings`` and
+    ``speed_minima``; ``n_<of>s`` and ``rate_hz`` for
     bouts (and ``bout_id`` added to the grouped table); then the feature
     columns.
 ``landmarks``
@@ -183,6 +185,27 @@ def _base_columns(frames, iv, kp_name):
     })
 
 
+def _signal_summary(frames, iv, seg: Segmentation):
+    """``<column>_sum`` and ``<column>_peak`` (the value farthest from 0,
+    signed) of the signal a piece was split on, over its frames.
+
+    Enough to merge or filter pieces later without rereading frames, e.g.
+    by length (``n_frames``) and net motion (the sum).
+    """
+    default = ("radial_velocity" if seg.method == "zero_crossings"
+               else "speed")
+    col = seg.params.get("column", default)
+    x = frames[col].to_numpy(float)
+    total, peak = [], []
+    for a, b in zip(iv["start"], iv["end"]):
+        v = x[a:b + 1]
+        ok = np.isfinite(v)
+        total.append(v[ok].sum() if ok.any() else np.nan)
+        peak.append(v[ok][np.argmax(np.abs(v[ok]))] if ok.any() else np.nan)
+    return pd.DataFrame({f"{col}_sum": total, f"{col}_peak": peak},
+                        index=iv.index)
+
+
 def _process_keypoint(frames, kps: KeypointSettings, context, next_id):
     """Segments and labels for one keypoint; returns (frames, tables)."""
     found, tables = {}, {}
@@ -222,6 +245,8 @@ def _process_keypoint(frames, kps: KeypointSettings, context, next_id):
                 dtype="Int64")
         if seg.method == "zero_crossings":
             table["direction"] = pd.array(iv["direction"], dtype="Int8")
+        if seg.method in ("zero_crossings", "speed_minima"):
+            table = table.join(_signal_summary(frames, iv, seg))
         if seg.features:
             table = pd.concat(
                 [table, feat.describe(frames, iv, seg.features, context)],

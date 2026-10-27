@@ -367,8 +367,8 @@ frames.
   session's median jaw position (was the mean of all jaw points);
   movements spanning a go cue keep their trial and get `spans_go_cue`.
 - **New:** any number of keypoints with their own settings; segmentation
-  for always-visible parts, submovements (with features and lick matches;
-  reversals of at least 5 frames), bouts; spectrum features;
+  for always-visible parts, submovements (every reversal kept, with
+  features, lick matches and the summed and peak split signal), bouts; spectrum features;
   `run_batch(screen=...)` skips cameras the video screen excludes;
   DeepLabCut, SLEAP and ndx-pose readers; `record.json` with settings,
   versions, clock and timing verdict.

@@ -92,13 +92,16 @@ class ProcessTest(unittest.TestCase):
 
     def test_submovements_and_bouts(self):
         sub = self.result["submovements"]
-        # out then back; the sign is noisy only near the jaw, so check the
-        # longest pieces of each movement
+        # every reversal is kept: out, back, and the 1-frame flip at the
+        # end where the tongue is back at the jaw
         first = sub[sub["movement_id"] == 1]
-        longest = first.nlargest(2, "n_frames").sort_values("start_frame")
-        self.assertEqual(list(longest["direction"]), [1, -1])
-        self.assertEqual(list(first["number_in_movement"]),
-                         list(range(1, len(first) + 1)))
+        self.assertEqual(list(first["direction"]), [1, -1, 1])
+        self.assertEqual(list(first["n_frames"]), [15, 14, 1])
+        self.assertEqual(list(first["number_in_movement"]), [1, 2, 3])
+        self.assertEqual(list(np.sign(first["radial_velocity_sum"])),
+                         [1, -1, 1])
+        np.testing.assert_array_equal(
+            np.sign(first["radial_velocity_peak"]), [1, -1, 1])
         bouts = self.result["bouts"]
         self.assertEqual(int(bouts["n_movements"].iloc[0]), 40)
         self.assertAlmostEqual(bouts["rate_hz"].iloc[0], FS / 75)
