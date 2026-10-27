@@ -10,11 +10,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # === Project-Specific Libraries ===
-from aind_dynamic_foraging_behavior_video_analysis.kinematics.video_clip_utils import (
-    extract_clips_ffmpeg_after_reencode,
-    find_labeled_video,
-    extract_trial_clip
-)
+from aind_dynamic_foraging_behavior_video_analysis import video_clips
 from aind_dynamic_foraging_behavior_video_analysis.kinematics.kinematics_nwb_utils import get_nwb_file
 from aind_dynamic_foraging_behavior_video_analysis.kinematics.tongue_kinematics_utils import (
     load_keypoints_from_csv,
@@ -518,6 +514,65 @@ def generate_tongue_dfs(predictions_csv_path: Path, data_root: Path, tolerance=0
     return nwb, tongue_kin, tongue_movs, kps_trim, tongue_trials
 
 
+def find_labeled_video(session_id, data_root):
+    # Find the labeled video file for a session_id, searching for any folder that starts with session_id
+    data_root = Path(data_root)
+    for subdir in data_root.glob(f"{session_id}*"):
+        labeled_dir = subdir / "pred_outputs" / "video_preds" / "labeled_videos"
+        matches = list(labeled_dir.glob("*_labeled.mp4"))
+        if matches:
+            return str(matches[0])
+    raise FileNotFoundError(f"Labeled video not found for {session_id}")
+
+
+def cut_trial_clips(trials, tongue_kins, video_path, save_dir,
+                    clip_duration_s=10.0, pad_s=0.5):
+    """Cut, per trial, the frames from ``pad_s`` before its go cue to
+    ``clip_duration_s + pad_s`` after it, frame-exact.
+
+    Row ``i`` of ``tongue_kins`` is video frame ``i`` and its
+    ``time_in_session`` is that frame's corrected time
+    (``integrate_keypoints_with_video_time`` keeps every frame), so the
+    go cues are placed on those times by ``video_clips.cut_event_clips``.
+    Right also in sessions with dropped frames, where a clip has fewer
+    frames than the window's duration at the nominal rate.
+
+    Parameters
+    ----------
+    trials : pandas.DataFrame
+        Trials with ``goCue_start_time_in_session``; the index numbers
+        the clips.
+    tongue_kins : pandas.DataFrame
+        Frame-level kinematics with ``time_in_session``.
+    video_path : str or pathlib.Path
+        The session's video (an MP4 frame-aligned with the predictions).
+    save_dir : str or pathlib.Path
+        Output folder (created if needed).
+    clip_duration_s, pad_s : float
+        Seconds after the go cue, and padding on both sides.
+
+    Returns
+    -------
+    pandas.DataFrame
+        One row per trial, as ``video_clips.cut_clips`` returns, plus
+        ``trial``. Clips are ``trial_<n>_f<start_frame:07d>.mp4`` with a
+        JSON sidecar; an existing clip is kept, and a window that runs
+        past either end of the video is skipped (``clip_path`` NaN).
+    """
+    frame_times = tongue_kins['time_in_session'].to_numpy()
+    rows = []
+    for trial_num, trial_row in trials.iterrows():
+        out = video_clips.cut_event_clips(
+            video_path, trial_row['goCue_start_time_in_session'], frame_times,
+            before=pad_s, after=clip_duration_s + pad_s,
+            out_dir=save_dir, prefix=f"trial_{trial_num}",
+        )
+        out.insert(0, 'trial', trial_num)
+        print(f"Trial {trial_num}: {out['status'].iloc[0]}")
+        rows.append(out)
+    return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
+
+
 def extract_example_clips_for_session(session_id, analysis_root, data_root):
     # Load data
     inter_dir = Path(analysis_root) / session_id / "intermediate_data"
@@ -551,18 +606,18 @@ def extract_example_clips_for_session(session_id, analysis_root, data_root):
         print(f"Warning: No labeled video found for {session_id}. Skipping video extraction, will plot only.")
         video_found = False
 
+    if video_found:
+        cut_trial_clips(top3, tongue_kins, video_path, good_dir,
+                        clip_duration_s=10, pad_s=0.5)
+        cut_trial_clips(bottom3, tongue_kins, video_path, bad_dir,
+                        clip_duration_s=10, pad_s=0.5)
+
     for _, trial_row in top3.iterrows():
-        if video_found:
-            extract_trial_clip(session_id, trial_row, tongue_kins, video_path, good_dir,
-                               clip_duration_s=10, pad_s=0.5)
         fig_path = good_dir / f"Trial{trial_row.name}_xy_vs_time.png"
         plot_kinematic_vs_time(tongue_kins, trial_row, time_col="time_in_session", value_cols=['x', 'y'],
                                save_path=fig_path, licks_df=nwb_df_licks, covered_col="nearest_movement_id", pad_s=0.5)
 
     for _, trial_row in bottom3.iterrows():
-        if video_found:
-            extract_trial_clip(session_id, trial_row, tongue_kins, video_path, bad_dir,
-                               clip_duration_s=10, pad_s=0.5)
         fig_path = bad_dir / f"Trial{trial_row.name}_xy_vs_time.png"
         plot_kinematic_vs_time(tongue_kins, trial_row, time_col="time_in_session", value_cols=['x', 'y'],
                                save_path=fig_path, licks_df=nwb_df_licks, covered_col="nearest_movement_id", pad_s=0.5)

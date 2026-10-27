@@ -281,8 +281,8 @@ pngs = vc.write_frames(mp4, [1200, 1201, 1202], "frames/", f"{session}_{camera}"
   it, so session time plus a constant offset lands late after a drop. The
   `video_alignment` conversions that do that (`compute_video_session_offset`,
   `session_time_to_video_time`, `video_time_to_session_time`,
-  `behavior_time_to_video_time`, `video_time_to_behavior_time`) and
-  `kinematics/video_clip_utils.get_video_time` are deprecated.
+  `behavior_time_to_video_time`, `video_time_to_behavior_time`) are
+  deprecated.
 - `event_frame_ranges` gives `start_frame`, `n_frames` and `in_video` per
   event (frames in `[t - before, t + after)`). The same ranges slice any
   per-frame signal (motion energy, pose predictions) with no video involved.
@@ -306,6 +306,27 @@ frames.
 
 
 ## Changes
+
+### Unreleased
+
+- **Removed:** `kinematics/video_clip_utils`. Its cutters sought in seconds
+  into the MP4 (late after dropped frames) or stream-copied from the previous
+  keyframe; use `video_clips.cut_event_clips` / `cut_clips`.
+  - `extract_clips_ffmpeg_encode`, `extract_clips_ffmpeg_after_reencode`:
+    use `cut_event_clips` on corrected frame times.
+  - `extract_trial_clip`: use `tongue_analysis.cut_trial_clips` (new; one
+    call for many trials, same `trial_<n>_f<start_frame>.mp4` names, now with
+    a JSON sidecar). A window running past either end of the video is now
+    skipped (`status` `skipped: ...`) instead of cut short.
+  - `get_video_time` (deprecated in 0.3.0): use
+    `video_alignment.event_frame_ranges`.
+  - `process_and_label_clips`, `create_labeled_video`, `make_cmap`: removed
+    without replacement (unused; time-based; `clip.fl` is gone in moviepy 2).
+  - `find_labeled_video` moved to `tongue_analysis`.
+- **Changed:** the `kinematics` extra no longer installs `moviepy` or
+  `opencv-python`.
+- **Docs:** `examples/video_alignment_example.ipynb` now clips through
+  corrected frame times and `cut_event_clips`.
 
 ### 0.4.0 (2026-10-23)
 
@@ -438,7 +459,7 @@ pip install -e .
 
 The core install (numpy, pandas) covers `video_alignment`,
 `video_timing_qc` and `kinematics/tongue_lickometer_utils`. For the kinematics, ephys and NWB
-modules (including the older `kinematics/video_clip_utils`), install the `kinematics` extra:
+modules, install the `kinematics` extra:
 ```bash
 pip install -e ".[kinematics]"
 ```

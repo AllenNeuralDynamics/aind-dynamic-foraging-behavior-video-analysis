@@ -237,7 +237,8 @@ point it at the new extra. `event_frame_ranges` stays core (numpy, pandas).
 ## Out of scope
 
 - **Any QC, and any time input to `video_clips`.** The screen and timing QC are upstream.
-- **`kinematics/video_clip_utils.py` stays** (`tongue_analysis.py` uses it). Its
+- **`kinematics/video_clip_utils.py` stayed** until after 0.4.0, when it was removed
+  (`tongue_analysis.cut_trial_clips` calls `cut_event_clips`). Its
   `extract_trial_clip` sought by a constant offset and was off in drop sessions; since
   revision 9 it uses `event_frame_ranges` (on the kinematics' corrected `time_raw`, one row per
   frame) + `cut_clip`, and `get_video_time` is deprecated.
