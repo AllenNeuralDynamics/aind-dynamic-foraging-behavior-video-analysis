@@ -6,6 +6,8 @@
 > A clean break: output files and column names change (map below); `kinematics_analysis` updates
 > its loaders when it re-runs the batch. Written so a new contributor or agent can pick it up
 > without the conversation that produced it.
+>
+> **How to use it:** `KINEMATICS_GUIDE.md`.
 
 ## Use cases
 

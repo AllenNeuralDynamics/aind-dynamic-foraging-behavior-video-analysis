@@ -200,4 +200,20 @@ def describe(frames: pd.DataFrame, intervals: pd.DataFrame, groups,
         for g in groups:
             row.update(FEATURE_GROUPS[g](seg, context))
         rows.append(row)
+    if not rows:
+        return pd.DataFrame(columns=_column_names(groups, cols, context),
+                            index=intervals.index, dtype=float)
     return pd.DataFrame(rows, index=intervals.index)
+
+
+def _column_names(groups, cols, context):
+    """Feature column names, from each group run on an empty segment, so
+    that a kind with no segments still has its columns."""
+    empty = {c: v[:0] for c, v in cols.items()}
+    names = []
+    for g in groups:
+        try:
+            names.extend(FEATURE_GROUPS[g](empty, context))
+        except Exception:  # noqa: BLE001 - a group that cannot run empty
+            pass
+    return names

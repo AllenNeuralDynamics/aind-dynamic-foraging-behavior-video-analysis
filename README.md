@@ -38,8 +38,8 @@ Module layering is spelled out in each module's docstring.
 object per keypoint, so each body part is processed its own way by the same
 code. The general steps know nothing about any task (numpy, pandas, scipy);
 `kinematics/tasks/dynamic_foraging_tongue.py` adds this task's files, clock
-and events. Design, old → new mapping and verification:
-`KINEMATICS_PLAN.md`.
+and events. **How to use it, with recipes: `KINEMATICS_GUIDE.md`.**
+Design, old → new mapping and verification: `KINEMATICS_PLAN.md`.
 
 ```python
 from aind_dynamic_foraging_behavior_video_analysis.kinematics import pipeline as pl, pose_io, signal
@@ -365,6 +365,10 @@ frames.
 - **New:** `trials.reward_before_choice` flags those trials
   (`flag_reward_before_choice`), and `quality.n_trials_reward_before_choice`
   counts them, so reward analyses can drop the trials, not the session.
+- **Fixed:** a kind of segment with no segments in a session now still has
+  its feature columns (an empty table had none, so code naming them failed).
+- **Docs:** `KINEMATICS_GUIDE.md`, how to write settings and use the
+  outputs, with recipes; every code block in it is run against a session.
 
 ### 0.5.0 (2026-10-27)
 
