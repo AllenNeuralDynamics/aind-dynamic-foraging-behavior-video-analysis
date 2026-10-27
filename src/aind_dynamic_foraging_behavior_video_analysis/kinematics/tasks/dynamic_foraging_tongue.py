@@ -28,7 +28,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from aind_dynamic_foraging_behavior_video_analysis import video_timing_qc
+from aind_dynamic_foraging_behavior_video_analysis import (
+    video_clips,
+    video_timing_qc,
+)
 from aind_dynamic_foraging_behavior_video_analysis.kinematics import (
     pipeline as pl,
     pose_io,
@@ -115,6 +118,27 @@ def find_inputs(session_dir, camera="BottomCamera") -> dict:
         raise FileNotFoundError(f"no video CSV for {camera} in {videos}")
     logs = sorted(session_dir.rglob("raw.harp/BehaviorEvents/Event_94.bin"))
     return {"video_csv": csv, "trigger_log": logs[0] if logs else None}
+
+
+def find_labeled_video(session_id, data_root):
+    """Lightning Pose labeled video of a session.
+
+    The first ``<data_root>/<session_id>*/pred_outputs/video_preds/
+    labeled_videos/*_labeled.mp4``.
+
+    Raises
+    ------
+    FileNotFoundError
+        If there is none.
+    """
+    data_root = Path(data_root)
+    for subdir in data_root.glob(f"{session_id}*"):
+        labeled_dir = (subdir / "pred_outputs" / "video_preds"
+                       / "labeled_videos")
+        matches = list(labeled_dir.glob("*_labeled.mp4"))
+        if matches:
+            return str(matches[0])
+    raise FileNotFoundError(f"Labeled video not found for {session_id}")
 
 
 # --- Timing ----------------------------------------------------------------
@@ -341,6 +365,65 @@ def quality_summary(session_dir) -> dict:
             "lick_coverage": float(q.get("lick_coverage", np.nan)),
             "movement_duration_p50": float(
                 q.get("movement_duration_p50", np.nan))}
+
+
+# --- Clips -----------------------------------------------------------------
+def cut_trial_clips(trials, kinematics, video_path, save_dir,
+                    clip_duration_s=10.0, pad_s=0.5):
+    """Cut, per trial, the frames from ``pad_s`` before its go cue to
+    ``clip_duration_s + pad_s`` after it, frame-exact.
+
+    Frame ``f`` of ``kinematics`` is video frame ``f`` and its ``time`` is
+    that frame's corrected Harp time in session time, the clock of
+    ``goCue_start_time_in_session``, so the go cues are placed on those
+    times by ``video_clips.cut_event_clips``. Right also in sessions with
+    dropped frames, where a clip has fewer frames than the window's
+    duration at the nominal rate.
+
+    Parameters
+    ----------
+    trials : pandas.DataFrame
+        Trials with ``goCue_start_time_in_session``; the index numbers the
+        clips.
+    kinematics : pandas.DataFrame
+        ``frame`` and ``time`` (session time), e.g. the ``kinematics``
+        table of ``run_session``; several keypoints may share a frame.
+    video_path : str or pathlib.Path
+        The session's video (an MP4 frame-aligned with the predictions).
+    save_dir : str or pathlib.Path
+        Output folder (created if needed).
+    clip_duration_s, pad_s : float
+        Seconds after the go cue, and padding on both sides.
+
+    Returns
+    -------
+    pandas.DataFrame
+        One row per trial, as ``video_clips.cut_clips`` returns, plus
+        ``trial``. Clips are ``trial_<n>_f<start_frame:07d>.mp4`` with a
+        JSON sidecar; an existing clip is kept, and a window that runs past
+        either end of the video (or of ``kinematics``) is skipped
+        (``clip_path`` NaN).
+
+    Raises
+    ------
+    ValueError
+        If ``kinematics`` does not have every frame from 0.
+    """
+    per_frame = kinematics.drop_duplicates("frame").sort_values("frame")
+    if not np.array_equal(per_frame["frame"].to_numpy(),
+                          np.arange(len(per_frame))):
+        raise ValueError("kinematics needs every frame from 0")
+    frame_time = per_frame["time"].to_numpy(float)
+    rows = []
+    for trial_num, trial_row in trials.iterrows():
+        out = video_clips.cut_event_clips(
+            video_path, trial_row["goCue_start_time_in_session"], frame_time,
+            before=pad_s, after=clip_duration_s + pad_s,
+            out_dir=save_dir, prefix=f"trial_{trial_num}",
+        )
+        out.insert(0, "trial", trial_num)
+        rows.append(out)
+    return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
 
 
 # --- One session, many sessions ---------------------------------------------

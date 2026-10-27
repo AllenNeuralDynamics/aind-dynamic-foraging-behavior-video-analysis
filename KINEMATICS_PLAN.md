@@ -220,7 +220,8 @@ near movement edges.
 | `get_session_name_from_path`, `find_video_csv_path`, `find_behavior_videos_folder` | `dynamic_foraging_tongue.session_name_from_path`, `find_inputs` |
 | QC plots (`plot_*`), `select_percentile_movements`, `extract_example_clips_for_session` | removed (follow-up) |
 | `ephys.tongue_ephys.load_intermediate_data`, `get_events_dict` | same names, read the new files; `firstMove` from `movements.start_time` |
-| `video_clip_utils.extract_trial_clip(..., tongue_kins, ...)` | takes the `kinematics` table (`frame`, `time` in session time) |
+| `video_clip_utils.extract_trial_clip(..., tongue_kins, ...)` | `tasks.dynamic_foraging_tongue.cut_trial_clips(trials, kinematics, ...)` (`video_clip_utils` removed; clips through `video_clips.cut_event_clips`) |
+| `video_clip_utils.find_labeled_video` | `tasks.dynamic_foraging_tongue.find_labeled_video` |
 
 ### Columns
 
@@ -259,9 +260,9 @@ Run with `kinematics_analysis/.venv-fip` (Python 3.12, pandas 2.3, numpy 2.0, sc
 
 - **Tests**: `python -m unittest discover` — 186 tests pass (2026-10-26), 60 of them new for
   the kinematics core and task module. New modules are at 97–100% line coverage; flake8 and
-  interrogate (100%) pass on them. `test_video_clips.ExtractTrialClipTest` and the import test
-  need `cv2`/`moviepy`, absent in that environment (as on `main`); they pass with stand-in
-  modules for those two imports, which `extract_trial_clip` does not use.
+  interrogate (100%) pass on them. With `video_clip_utils` removed, nothing in the
+  package imports `cv2` or `moviepy`, so the import test and
+  `test_video_clips.CutTrialClipsTest` need no stand-ins.
 - **Parity against the old pipeline** (`scripts/compare_kinematics_parity.py`), on session
   `behavior_716325_2024-05-31_10-31-14` (2,689,718 frames, 7,393 movements), from its old frame
   table and its rows in `all_tongue_movements_04022026.parquet`:
