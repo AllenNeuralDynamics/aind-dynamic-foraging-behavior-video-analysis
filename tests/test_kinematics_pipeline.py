@@ -283,6 +283,11 @@ class TaskTest(unittest.TestCase):
         self.assertAlmostEqual(q["lick_coverage"], 0.75)
         self.assertAlmostEqual(q["movement_duration_p50"], 0.058, places=4)
 
+    def test_time_zero_needs_both_go_cue_columns(self):
+        with self.assertRaisesRegex(ValueError, "pass time_zero"):
+            dft.session_time_zero(
+                self.trials.drop(columns="goCue_start_time"))
+
     def test_find_inputs_and_names(self):
         files = dft.find_inputs(self.data_root / SESSION)
         self.assertEqual(files["video_csv"], self.video_csv)
@@ -305,6 +310,7 @@ class TaskTest(unittest.TestCase):
         except ImportError as e:
             self.skipTest(f"AIND NWB libraries not installed: {e}")
         nwb = mock.Mock()
+        nwb.trials = {"goCue_start_time": [101.0, 102.5]}
         calls = []
 
         def trials(n, **kw):
@@ -322,10 +328,11 @@ class TaskTest(unittest.TestCase):
                                   side_effect=trials), \
                 mock.patch.object(annotation, "annotate_licks",
                                   return_value=self.licks):
-            tr, lk, ev = dft.load_nwb_tables(SESSION, nwb_folder="x")
+            tr, lk, ev, t0 = dft.load_nwb_tables(SESSION, nwb_folder="x")
         self.assertIs(tr, self.trials)
         self.assertIs(lk, self.licks)
         self.assertEqual(ev, "events")
+        self.assertEqual(t0, 101.0)
         self.assertEqual(calls, [{"cut_interruptions": True}, {}])
 
     def test_compare_old_new_script(self):
@@ -371,7 +378,9 @@ class TaskTest(unittest.TestCase):
         self.assertEqual(rows.loc["quality lick_coverage", "new"], 0.75)
 
     def test_run_batch(self):
-        tables = (self.trials, self.licks, pd.DataFrame({"event": ["x"]}))
+        # as from data-utils: no Harp-time go cue column on trials
+        tables = (self.trials.drop(columns="goCue_start_time"), self.licks,
+                  pd.DataFrame({"event": ["x"]}), 101.0)
         out = Path(self.tmp.name) / "out"
         bad = Path(self.tmp.name) / "behavior_999999_2025-01-01_10-00-00.csv"
         with mock.patch.object(dft, "load_nwb_tables", return_value=tables):

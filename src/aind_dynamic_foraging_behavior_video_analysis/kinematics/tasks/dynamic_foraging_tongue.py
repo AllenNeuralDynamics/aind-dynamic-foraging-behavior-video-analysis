@@ -178,7 +178,17 @@ def frame_times(video_csv, trigger_log=None):
 
 def session_time_zero(trials: pd.DataFrame) -> float:
     """Harp time of session time 0, from a trials table with both
-    ``goCue_start_time`` and ``goCue_start_time_in_session``."""
+    ``goCue_start_time`` and ``goCue_start_time_in_session``.
+
+    The data-utils trials table has only the second; then pass
+    ``time_zero`` from ``load_nwb_tables`` instead.
+    """
+    missing = {"goCue_start_time", "goCue_start_time_in_session"} - set(
+        trials.columns)
+    if missing:
+        raise ValueError(
+            f"trials lacks {sorted(missing)}: pass time_zero (the Harp time "
+            "of the first go cue, e.g. from load_nwb_tables)")
     offset = (trials["goCue_start_time"]
               - trials["goCue_start_time_in_session"])
     return float(offset.dropna().median())
@@ -430,7 +440,7 @@ def cut_trial_clips(trials, kinematics, video_path, save_dir,
 # --- One session, many sessions ---------------------------------------------
 def run_session(pose_path, video_csv, trials, licks, trigger_log=None,
                 settings=TONGUE_SETTINGS, session=None, events=None,
-                lick_tolerance_s=0.01) -> dict:
+                lick_tolerance_s=0.01, time_zero=None) -> dict:
     """Process one session; returns the tables and record (see module).
 
     Parameters
@@ -443,10 +453,14 @@ def run_session(pose_path, video_csv, trials, licks, trigger_log=None,
         NWB trials and licks tables (``load_nwb_tables``).
     events : pandas.DataFrame, optional
         Saved alongside unchanged.
+    time_zero : float, optional
+        Harp time of the first go cue (session time 0), as returned by
+        ``load_nwb_tables``. Default: from ``trials`` (``session_time_zero``).
     """
     session = session or session_name_from_path(pose_path)
     harp_time, timing = frame_times(video_csv, trigger_log)
-    time_zero = session_time_zero(trials)
+    if time_zero is None:
+        time_zero = session_time_zero(trials)
     pose, frames = signal.add_time(pose_io.read_pose(pose_path),
                                    harp_time - time_zero)
     result = pl.process(pose, settings, session=session)
@@ -478,10 +492,18 @@ def run_session(pose_path, video_csv, trials, licks, trigger_log=None,
 
 
 def load_nwb_tables(session, nwb_folder=None):
-    """Trials, licks and events tables of a session's behavior NWB.
+    """Trials, licks and events tables of a session's behavior NWB, and
+    the Harp time of its first go cue.
 
     Uses ``kinematics_nwb_utils.get_nwb_file`` (which builds the NWB from
-    the session JSON if needed) and the AIND data-utils tables.
+    the session JSON if needed) and the AIND data-utils tables, whose
+    ``*_in_session`` times start at the first go cue.
+
+    Returns
+    -------
+    trials, licks, events : pandas.DataFrame
+    time_zero : float
+        ``nwb.trials["goCue_start_time"][0]``, as before 0.5.0.
     """
     import aind_dynamic_foraging_data_utils.nwb_utils as nwb_utils
     from aind_dynamic_foraging_basic_analysis.licks import annotation
@@ -500,7 +522,8 @@ def load_nwb_tables(session, nwb_folder=None):
             raise
         nwb.df_trials = nwb_utils.create_df_trials(nwb)
     licks = annotation.annotate_licks(nwb)
-    return nwb.df_trials, licks, nwb.df_events
+    time_zero = float(nwb.trials["goCue_start_time"][0])
+    return nwb.df_trials, licks, nwb.df_events, time_zero
 
 
 def _snake(camera):
@@ -560,9 +583,10 @@ def run_batch(pose_paths, data_root, out_root, settings=TONGUE_SETTINGS,
                 else None
             if use_trigger_log and log is None:
                 raise FileNotFoundError("no camera trigger log (Event_94.bin)")
-            trials, licks, events = load_nwb_tables(session, nwb_folder)
+            trials, licks, events, t0 = load_nwb_tables(session, nwb_folder)
             result = run_session(pose_path, files["video_csv"], trials,
-                                 licks, log, settings, session, events)
+                                 licks, log, settings, session, events,
+                                 time_zero=t0)
             pl.write(result, out_dir)
             rows.append({"session": session, "status": "done"})
         except Exception as e:  # noqa: BLE001 - one session must not stop all
