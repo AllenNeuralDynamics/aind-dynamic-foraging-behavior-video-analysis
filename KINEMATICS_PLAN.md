@@ -228,9 +228,8 @@ largest of noisy values).
   coverage from 0.83 to 0.95 (below).
 - Trial checks (0.5.1): data-utils' `create_df_trials` raises "Reward before choice time" for
   2025 sessions where an earned reward precedes the choice. On Code Ocean that stopped 19 of 53
-  sessions, each with only 1-5 such trials (of 81-200 earned rewards) but early by a median of
-  0.2-1.1 s per session (up to 1.2 s), so
-  mislabeled rewards rather than clock jitter. Kinematics does not use reward times.
+  sessions. In the five checked, 1-5 trials each (of 81-200 earned rewards) were early by a
+  median of 0.2-1.1 s per session (up to 1.2 s): mislabeled rewards rather than clock jitter. Kinematics does not use reward times.
   `run_batch(ignore_trial_errors=True)` turns the check into a warning; `trials` gets
   `reward_before_choice` for exactly those trials and `quality` counts them, so reward analyses
   drop trials, not sessions. Off by default; saved in the record (`nwb.ignore_trial_errors`).

@@ -358,9 +358,9 @@ frames.
   (and `load_nwb_tables`) passes `ignore_errors=True` to data-utils'
   `create_df_trials`, so its trial checks warn instead of stopping the
   session. From 2025 it raises "Reward before choice time" when an earned
-  reward precedes the choice; on Code Ocean that stopped 19 of 53 sessions,
-  each with 1-5 such trials (of 81-200 earned rewards; per-session median
-  0.2-1.1 s early, up to 1.2 s).
+  reward precedes the choice; on Code Ocean that stopped 19 of 53 sessions
+  (in the five checked, 1-5 such trials each of 81-200 earned rewards,
+  per-session median 0.2-1.1 s early, up to 1.2 s).
   Default off; the setting is saved in each record (`nwb`).
 - **New:** `trials.reward_before_choice` flags those trials
   (`flag_reward_before_choice`), and `quality.n_trials_reward_before_choice`
