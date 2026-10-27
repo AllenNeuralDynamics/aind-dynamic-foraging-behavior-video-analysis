@@ -352,7 +352,7 @@ frames.
 
 ## Changes
 
-### Unreleased (0.5.0, branch `feat/kinematics-core`)
+### 0.5.0 (2026-10-27)
 
 - **Breaking:** `kinematics/tongue_analysis.py` and
   `kinematics/tongue_kinematics_utils.py` are replaced by `kinematics.pose_io,

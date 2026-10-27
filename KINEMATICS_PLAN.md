@@ -1,6 +1,6 @@
 # Plan: kinematics — from tracker output to tidy tables
 
-> **Status: revision 4 (2026-10-27), implemented on branch `feat/kinematics-core`, not released.**
+> **Status: revision 4 (2026-10-27), released in 0.5.0 (PR #16, tag `v0.5.0`).**
 > Replaces `kinematics/tongue_analysis.py` and `kinematics/tongue_kinematics_utils.py` with a
 > general core (`kinematics/`) and one task module (`kinematics/tasks/dynamic_foraging_tongue.py`).
 > A clean break: output files and column names change (map below); `kinematics_analysis` updates
