@@ -646,19 +646,28 @@ class RoundTripTest(unittest.TestCase):
 
 
 class CutTrialClipsTest(unittest.TestCase):
-    """kinematics.tongue_analysis.cut_trial_clips, across a drop."""
+    """kinematics.tasks.dynamic_foraging_tongue.cut_trial_clips, across a
+    drop."""
 
     @classmethod
     def setUpClass(cls):
-        """A source video and frame-level kinematics with 20 frames lost."""
+        """A source video and a two-keypoint kinematics table, 20 frames
+        lost."""
         cls.tmp = tempfile.TemporaryDirectory()
         cls.dir = Path(cls.tmp.name)
         cls.src = write_source(cls.dir / "src.mp4")
         rows = np.arange(N_SOURCE)
         # 20 exposures lost after row 60: later rows are 20 frames later.
         harp = 100.0 + (rows + 20 * (rows > 60)) / FPS
-        cls.kins = pd.DataFrame(
-            {"time_raw": harp, "time_in_session": harp - 101.0}
+        cls.time = harp - 101.0  # session time
+        cls.kins = pd.concat(
+            [
+                pd.DataFrame(
+                    {"frame": rows, "time": cls.time, "keypoint": kp}
+                )
+                for kp in ("tongue_tip_center", "jaw")
+            ],
+            ignore_index=True,
         )
 
     @classmethod
@@ -666,14 +675,10 @@ class CutTrialClipsTest(unittest.TestCase):
         """Remove the files."""
         cls.tmp.cleanup()
 
-    def trials(self, go_cue_rows, names):
-        """Trials with go cues at the session times of ``go_cue_rows``."""
+    def trials(self, go_cue_frames, names):
+        """Trials with go cues at the session times of ``go_cue_frames``."""
         return pd.DataFrame(
-            {
-                "goCue_start_time_in_session": self.kins.time_in_session[
-                    go_cue_rows
-                ].to_numpy()
-            },
+            {"goCue_start_time_in_session": self.time[go_cue_frames]},
             index=names,
         )
 
@@ -683,11 +688,11 @@ class CutTrialClipsTest(unittest.TestCase):
         The pad is off the frame grid, so no edge rounds either way. A
         constant session-to-video offset would start 20 frames late.
         """
-        from aind_dynamic_foraging_behavior_video_analysis.kinematics import (
-            tongue_analysis as ta,
+        from aind_dynamic_foraging_behavior_video_analysis.kinematics.tasks import (  # noqa: E501
+            dynamic_foraging_tongue as dft,
         )
 
-        out = ta.cut_trial_clips(
+        out = dft.cut_trial_clips(
             self.trials([150], [7]),
             self.kins,
             self.src,
@@ -704,7 +709,7 @@ class CutTrialClipsTest(unittest.TestCase):
         )
         # An existing clip is kept.
         mtime = clip.stat().st_mtime_ns
-        again = ta.cut_trial_clips(
+        again = dft.cut_trial_clips(
             self.trials([150], [7]),
             self.kins,
             self.src,
@@ -717,11 +722,11 @@ class CutTrialClipsTest(unittest.TestCase):
 
     def test_window_past_the_video_is_skipped(self):
         """A window running past the end gives no clip; others still cut."""
-        from aind_dynamic_foraging_behavior_video_analysis.kinematics import (
-            tongue_analysis as ta,
+        from aind_dynamic_foraging_behavior_video_analysis.kinematics.tasks import (  # noqa: E501
+            dynamic_foraging_tongue as dft,
         )
 
-        out = ta.cut_trial_clips(
+        out = dft.cut_trial_clips(
             self.trials([100, N_SOURCE - 5], [1, 2]),
             self.kins,
             self.src,
@@ -729,9 +734,23 @@ class CutTrialClipsTest(unittest.TestCase):
             clip_duration_s=1.0,
             pad_s=0.0,
         )
-        self.assertEqual(list(out["status"])[0], "cut")
+        self.assertEqual(out["status"][0], "cut")
         self.assertTrue(out["status"][1].startswith("skipped"))
         self.assertTrue(pd.isna(out["clip_path"][1]))
+
+    def test_missing_frames_raise(self):
+        """A table without every frame from 0 cannot place the windows."""
+        from aind_dynamic_foraging_behavior_video_analysis.kinematics.tasks import (  # noqa: E501
+            dynamic_foraging_tongue as dft,
+        )
+
+        with self.assertRaises(ValueError):
+            dft.cut_trial_clips(
+                self.trials([100], [1]),
+                self.kins[self.kins.frame != 50],
+                self.src,
+                self.dir / "m",
+            )
 
 
 if __name__ == "__main__":

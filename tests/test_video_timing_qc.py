@@ -577,13 +577,17 @@ class CorrectFrameTimesTest(unittest.TestCase):
             )
 
 
-class IntegrateKeypointsTest(unittest.TestCase):
-    """integrate_keypoints_with_video_time uses the corrected Harp time."""
+class KinematicsFrameTimesTest(unittest.TestCase):
+    """The kinematics task module puts pose on the corrected Harp time."""
 
     def test_both_layouts_with_drops(self):
-        """Keypoint time_raw is the corrected Harp time, in either layout."""
-        from aind_dynamic_foraging_behavior_video_analysis.kinematics.tongue_kinematics_utils import (  # noqa: E501
-            integrate_keypoints_with_video_time,
+        """Pose time is the corrected Harp time, in either layout."""
+        from aind_dynamic_foraging_behavior_video_analysis.kinematics import (
+            pose_io,
+            signal,
+        )
+        from aind_dynamic_foraging_behavior_video_analysis.kinematics.tasks import (  # noqa: E501
+            dynamic_foraging_tongue as dft,
         )
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -592,35 +596,38 @@ class IntegrateKeypointsTest(unittest.TestCase):
                 ("new", "BottomCamera"),
             ]:
                 with self.subTest(layout=layout):
-                    path, triggers = simulate(
+                    path, _ = simulate(
                         tmp,
                         dropped=[100, 400, 401],
                         layout=layout,
                         name=name,
                     )
-                    n_rows = 3000 - 3
-                    kps = {"tongue": pd.DataFrame({"x": np.zeros(n_rows)})}
-                    kps_trim, video_csv = integrate_keypoints_with_video_time(
-                        path, kps
-                    )
-                    k = (video_csv["frame_number"] - 1000).to_numpy()
-                    time_raw = kps_trim["tongue"]["time_raw"].to_numpy()
+                    harp, timing = dft.frame_times(path)
+                    self.assertEqual(timing["verdict"], "use")
+                    frames = vtq.load_video_timing(path)["frame_number"]
+                    k = (frames - 1000).to_numpy()
                     self.assertLess(
-                        np.abs(time_raw - (100.0 + IFI * k)).max(), 1e-4
+                        np.abs(harp - (100.0 + IFI * k)).max(), 1e-4
                     )
-                    self.assertEqual(kps_trim["tongue"]["time"].iloc[0], 0)
+                    # One extra pose row past the video is cut.
+                    n = len(harp) + 1
+                    pose = pose_io.pose_table(
+                        np.zeros((n, 1, 2)), None, ["tongue"]
+                    )
+                    pose, info = signal.add_time(pose, harp)
+                    np.testing.assert_array_equal(pose["time"], harp)
+                    self.assertEqual(info["n_frames"], len(harp))
 
     def test_uncorrectable_raises(self):
         """Timing that can't be trusted stops the pipeline."""
-        from aind_dynamic_foraging_behavior_video_analysis.kinematics.tongue_kinematics_utils import (  # noqa: E501
-            integrate_keypoints_with_video_time,
+        from aind_dynamic_foraging_behavior_video_analysis.kinematics.tasks import (  # noqa: E501
+            dynamic_foraging_tongue as dft,
         )
 
         with tempfile.TemporaryDirectory() as tmp:
             path, _ = simulate(tmp, trigger_errors={500: -0.983, 501: -0.983})
-            kps = {"tongue": pd.DataFrame({"x": np.zeros(3000)})}
             with self.assertRaises(ValueError):
-                integrate_keypoints_with_video_time(path, kps)
+                dft.frame_times(path)
 
 
 if __name__ == "__main__":
