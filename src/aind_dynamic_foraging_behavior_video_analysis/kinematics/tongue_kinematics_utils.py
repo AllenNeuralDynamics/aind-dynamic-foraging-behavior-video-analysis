@@ -18,7 +18,8 @@ Ownership split with the sibling modules:
   definition (tongue within a distance of a spout) from the one used here
   (any tracked excursion matched to a lickometer time), and both are
   load-bearing.
-* ``video_clip_utils`` - clip extraction and labeled-video helpers.
+
+Clips are cut by ``video_clips`` (``tongue_analysis.cut_trial_clips``).
 
 The plot functions kept here are pipeline QC artefacts written by
 ``analyze_tongue_movement_quality``; they carry no styling contract and are

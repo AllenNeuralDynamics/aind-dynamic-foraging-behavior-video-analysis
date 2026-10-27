@@ -8,7 +8,7 @@ the tracked tongue within ``threshold`` pixels of a spout - and the
 event-level scoring of detected licks against lickometer times. It does not
 load or filter keypoints (``tongue_kinematics_utils.load_keypoints_from_csv``
 / ``mask_keypoint_data`` / ``filter_timestamps_refractory``) and does not
-cut video clips (``video_clip_utils.extract_clips_ffmpeg_encode``).
+cut video clips (``video_clips.cut_event_clips``).
 """
 import numpy as np
 import pandas as pd
