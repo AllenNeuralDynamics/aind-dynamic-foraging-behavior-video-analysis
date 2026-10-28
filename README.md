@@ -38,8 +38,8 @@ Module layering is spelled out in each module's docstring.
 object per keypoint, so each body part is processed its own way by the same
 code. The general steps know nothing about any task (numpy, pandas, scipy);
 `kinematics/tasks/dynamic_foraging_tongue.py` adds this task's files, clock
-and events. Design, old → new mapping and verification:
-`KINEMATICS_PLAN.md`.
+and events. **How to use it, with recipes: `KINEMATICS_GUIDE.md`.**
+Design, old → new mapping and verification: `KINEMATICS_PLAN.md`.
 
 ```python
 from aind_dynamic_foraging_behavior_video_analysis.kinematics import pipeline as pl, pose_io, signal
@@ -351,6 +351,24 @@ frames.
 
 
 ## Changes
+
+### 0.5.1 (2026-10-27)
+
+- **New:** `dynamic_foraging_tongue.run_batch(..., ignore_trial_errors=True)`
+  (and `load_nwb_tables`) passes `ignore_errors=True` to data-utils'
+  `create_df_trials`, so its trial checks warn instead of stopping the
+  session. From 2025 it raises "Reward before choice time" when an earned
+  reward precedes the choice; on Code Ocean that stopped 19 of 53 sessions
+  (in the five checked, 1-5 such trials each of 81-200 earned rewards,
+  per-session median 0.2-1.1 s early, up to 1.2 s).
+  Default off; the setting is saved in each record (`nwb`).
+- **New:** `trials.reward_before_choice` flags those trials
+  (`flag_reward_before_choice`), and `quality.n_trials_reward_before_choice`
+  counts them, so reward analyses can drop the trials, not the session.
+- **Fixed:** a kind of segment with no segments in a session now still has
+  its feature columns (an empty table had none, so code naming them failed).
+- **Docs:** `KINEMATICS_GUIDE.md`, how to write settings and use the
+  outputs, with recipes; every code block in it is run against a session.
 
 ### 0.5.0 (2026-10-27)
 

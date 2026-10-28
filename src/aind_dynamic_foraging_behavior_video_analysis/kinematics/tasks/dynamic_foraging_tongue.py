@@ -322,6 +322,28 @@ def match_licks(segments, licks, id_col, lick_tolerance_s=0.001):
     return seg.sort_index(), lk
 
 
+def flag_reward_before_choice(trials):
+    """Add ``reward_before_choice``: an earned (not manual) reward whose
+    time is before the choice, which data-utils' trial checks reject.
+
+    NA when the trials table lacks the columns needed (``earned_reward``,
+    ``extra_reward``, ``choice_time_in_session``,
+    ``reward_time_in_session``).
+    """
+    out = trials.copy()
+    need = ["earned_reward", "extra_reward", "choice_time_in_session",
+            "reward_time_in_session"]
+    if not set(need) <= set(out.columns):
+        out["reward_before_choice"] = pd.array([pd.NA] * len(out),
+                                               dtype="boolean")
+        return out
+    earned = (out["earned_reward"].astype("boolean").fillna(False)
+              & ~out["extra_reward"].astype("boolean").fillna(False))
+    early = out["choice_time_in_session"] > out["reward_time_in_session"]
+    out["reward_before_choice"] = (earned & early).astype("boolean")
+    return out
+
+
 def summarize_trials(trials, movements, licks):
     """Per trial: movement and lick summaries, joined to ``trials``.
 
@@ -500,8 +522,8 @@ def run_session(pose_path, video_csv, trials, licks, trigger_log=None,
         result["submovements"], result["licks"] = match_licks(
             result["submovements"], result["licks"], "submovement_id",
             lick_tolerance_s)
-    result["trials"] = summarize_trials(trials, result["movements"],
-                                        result["licks"])
+    result["trials"] = summarize_trials(flag_reward_before_choice(trials),
+                                        result["movements"], result["licks"])
     if events is not None:
         result["events"] = events
     for name in ("licks", "trials", "events"):
@@ -516,18 +538,26 @@ def run_session(pose_path, video_csv, trials, licks, trigger_log=None,
         "frames": frames,
         "timing": timing,
         "lick_tolerance_s": lick_tolerance_s,
-        "quality": quality(result["movements"], result["licks"]),
+        "quality": {**quality(result["movements"], result["licks"]),
+                    "n_trials_reward_before_choice": int(
+                        result["trials"]["reward_before_choice"].sum())},
     })
     return result
 
 
-def load_nwb_tables(session, nwb_folder=None):
+def load_nwb_tables(session, nwb_folder=None, ignore_trial_errors=False):
     """Trials, licks and events tables of a session's behavior NWB, and
     the Harp time of its first go cue.
 
     Uses ``kinematics_nwb_utils.get_nwb_file`` (which builds the NWB from
     the session JSON if needed) and the AIND data-utils tables, whose
     ``*_in_session`` times start at the first go cue.
+
+    ``ignore_trial_errors`` is passed to data-utils' ``create_df_trials`` as
+    ``ignore_errors``: its trial checks (e.g. "Reward before choice time",
+    which raises for sessions from 2025) then warn instead of stopping the
+    session. The affected trials are flagged by
+    ``flag_reward_before_choice``.
 
     Returns
     -------
@@ -545,12 +575,14 @@ def load_nwb_tables(session, nwb_folder=None):
     kwargs = {} if nwb_folder is None else {"nwb_folder": nwb_folder}
     nwb = get_nwb_file(session, **kwargs)
     nwb.df_events = nwb_utils.create_df_events(nwb)
+    checks = {"ignore_errors": True} if ignore_trial_errors else {}
     try:
-        nwb.df_trials = nwb_utils.create_df_trials(nwb, cut_interruptions=True)
+        nwb.df_trials = nwb_utils.create_df_trials(
+            nwb, cut_interruptions=True, **checks)
     except TypeError as e:
         if "cut_interruptions" not in str(e):
             raise
-        nwb.df_trials = nwb_utils.create_df_trials(nwb)
+        nwb.df_trials = nwb_utils.create_df_trials(nwb, **checks)
     licks = annotation.annotate_licks(nwb)
     time_zero = float(nwb.trials["goCue_start_time"][0])
     return nwb.df_trials, licks, nwb.df_events, time_zero
@@ -578,7 +610,7 @@ def screen_status(screen, session, camera):
 
 def run_batch(pose_paths, data_root, out_root, settings=TONGUE_SETTINGS,
               camera="BottomCamera", use_trigger_log=None, force=False,
-              nwb_folder=None, screen=None):
+              nwb_folder=None, screen=None, ignore_trial_errors=False):
     """Process many sessions into ``<out_root>/<session>/``.
 
     A session already written is skipped unless ``force``. Errors are
@@ -586,6 +618,8 @@ def run_batch(pose_paths, data_root, out_root, settings=TONGUE_SETTINGS,
     batch. ``use_trigger_log``: None uses it when present, True requires
     it, False ignores it. ``screen`` (``video_screen.load_screen``), when
     given, excludes sessions whose camera is not in use or not screened.
+    ``ignore_trial_errors`` is passed to ``load_nwb_tables`` and saved in
+    each session's record (``nwb.ignore_trial_errors``).
 
     Returns
     -------
@@ -613,10 +647,13 @@ def run_batch(pose_paths, data_root, out_root, settings=TONGUE_SETTINGS,
                 else None
             if use_trigger_log and log is None:
                 raise FileNotFoundError("no camera trigger log (Event_94.bin)")
-            trials, licks, events, t0 = load_nwb_tables(session, nwb_folder)
+            trials, licks, events, t0 = load_nwb_tables(
+                session, nwb_folder, ignore_trial_errors)
             result = run_session(pose_path, files["video_csv"], trials,
                                  licks, log, settings, session, events,
                                  time_zero=t0)
+            result["record"]["nwb"] = {
+                "ignore_trial_errors": bool(ignore_trial_errors)}
             pl.write(result, out_dir)
             rows.append({"session": session, "status": "done"})
         except Exception as e:  # noqa: BLE001 - one session must not stop all

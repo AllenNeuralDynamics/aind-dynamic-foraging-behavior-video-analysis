@@ -324,7 +324,7 @@ class TaskTest(unittest.TestCase):
 
         def trials(n, **kw):
             calls.append(kw)
-            if kw:
+            if "cut_interruptions" in kw:
                 raise TypeError("unexpected keyword argument "
                                 "'cut_interruptions'")
             return self.trials
@@ -338,11 +338,33 @@ class TaskTest(unittest.TestCase):
                 mock.patch.object(annotation, "annotate_licks",
                                   return_value=self.licks):
             tr, lk, ev, t0 = dft.load_nwb_tables(SESSION, nwb_folder="x")
+            dft.load_nwb_tables(SESSION, ignore_trial_errors=True)
         self.assertIs(tr, self.trials)
         self.assertIs(lk, self.licks)
         self.assertEqual(ev, "events")
         self.assertEqual(t0, 101.0)
-        self.assertEqual(calls, [{"cut_interruptions": True}, {}])
+        self.assertEqual(calls, [
+            {"cut_interruptions": True}, {},
+            {"cut_interruptions": True, "ignore_errors": True},
+            {"ignore_errors": True}])
+
+    def test_flag_reward_before_choice(self):
+        trials = pd.DataFrame({
+            "trial": [1, 2, 3, 4, 5],
+            "earned_reward": [True, True, True, False, True],
+            "extra_reward": [False, False, True, False, False],
+            "choice_time_in_session": [1.0, 5.0, 9.0, 13.0, np.nan],
+            "reward_time_in_session": [1.2, 4.0, 8.0, np.nan, 17.0]})
+        out = dft.flag_reward_before_choice(trials)
+        # 2: earned reward 1 s before the choice; 3 is a manual reward
+        self.assertEqual(list(out["reward_before_choice"]),
+                         [False, True, False, False, False])
+        missing = dft.flag_reward_before_choice(trials[["trial"]])
+        self.assertTrue(missing["reward_before_choice"].isna().all())
+        self.assertEqual(
+            self.result["record"]["quality"]["n_trials_reward_before_choice"],
+            0)
+        self.assertIn("reward_before_choice", self.result["trials"])
 
     def test_compare_old_new_script(self):
         path = Path(__file__).parents[1] / "scripts" / \
@@ -392,13 +414,21 @@ class TaskTest(unittest.TestCase):
                   pd.DataFrame({"event": ["x"]}), 101.0)
         out = Path(self.tmp.name) / "out"
         bad = Path(self.tmp.name) / "behavior_999999_2025-01-01_10-00-00.csv"
-        with mock.patch.object(dft, "load_nwb_tables", return_value=tables):
+        with mock.patch.object(dft, "load_nwb_tables",
+                               return_value=tables) as load:
             status = dft.run_batch([self.pose_path, bad], self.data_root,
                                    out)
             self.assertEqual(list(status["status"].str[:5]),
                              ["done", "error"])
             self.assertTrue((out / "errors.txt").exists())
+            self.assertFalse(pl.read_record(out / SESSION)["nwb"]
+                             ["ignore_trial_errors"])
             again = dft.run_batch([self.pose_path], self.data_root, out)
+            dft.run_batch([self.pose_path], self.data_root, out, force=True,
+                          ignore_trial_errors=True)
+            self.assertEqual(load.call_args.args, (SESSION, None, True))
+            self.assertTrue(pl.read_record(out / SESSION)["nwb"]
+                            ["ignore_trial_errors"])
             self.assertEqual(list(again["status"]), ["skipped"])
             strict = dft.run_batch([self.pose_path], self.data_root, out,
                                    use_trigger_log=True, force=True)

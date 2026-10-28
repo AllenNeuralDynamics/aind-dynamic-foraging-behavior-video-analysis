@@ -6,6 +6,8 @@
 > A clean break: output files and column names change (map below); `kinematics_analysis` updates
 > its loaders when it re-runs the batch. Written so a new contributor or agent can pick it up
 > without the conversation that produced it.
+>
+> **How to use it:** `KINEMATICS_GUIDE.md`.
 
 ## Use cases
 
@@ -226,6 +228,13 @@ largest of noisy values).
   its end), the same for submovements, so a looser rule can be applied later.
   Revision 3 briefly matched within 10 ms of either end; on Code Ocean that raised one session's
   coverage from 0.83 to 0.95 (below).
+- Trial checks (0.5.1): data-utils' `create_df_trials` raises "Reward before choice time" for
+  2025 sessions where an earned reward precedes the choice. On Code Ocean that stopped 19 of 53
+  sessions. In the five checked, 1-5 trials each (of 81-200 earned rewards) were early by a
+  median of 0.2-1.1 s per session (up to 1.2 s): mislabeled rewards rather than clock jitter. Kinematics does not use reward times.
+  `run_batch(ignore_trial_errors=True)` turns the check into a warning; `trials` gets
+  `reward_before_choice` for exactly those trials and `quality` counts them, so reward analyses
+  drop trials, not sessions. Off by default; saved in the record (`nwb.ignore_trial_errors`).
 - `run_batch(screen=...)` takes the `video_screen` table and skips sessions whose camera is not
   in use (`excluded: <reason>`) or was not screened.
 - Movements get `trial` (last go cue at or before the start), `go_cue_time`,
@@ -390,6 +399,8 @@ Run with `kinematics_analysis/.venv-fip` (Python 3.12, pandas 2.3, numpy 2.0, sc
 
 ## Changes
 
+- 0.5.1 (2026-10-27): `ignore_trial_errors` and `reward_before_choice` (Dynamic foraging task
+  module).
 - Revision 4 (2026-10-27): strict lick matching restored (half a frame) with
   `closest_<kind>_id` / `closest_<kind>_offset_s` kept; `lick_coverage_within_10ms`; clock from
   the NWB trials' first go cue; Code Ocean results and the smoothing simulation recorded;

@@ -83,6 +83,15 @@ class FeatureGroupTest(unittest.TestCase):
         short = one(frames(np.ones(10)), ["spectrum"])
         self.assertTrue(np.isnan(short["dominant_hz"]))
 
+    def test_no_segments_keeps_columns(self):
+        df = frames([1, 2, 3])
+        iv = pd.DataFrame({"start": [], "end": []}, dtype=int)
+        out = features.describe(df, iv, ["path", "excursion", "spectrum"],
+                                {"fs_hz": 1 / DT, "origin": (0.0, 0.0)})
+        self.assertEqual(len(out), 0)
+        for c in ("path_length", "amplitude", "dominant_hz"):
+            self.assertIn(c, out.columns)
+
     def test_add_feature_group(self):
         @features.add_feature_group("n_points")
         def n_points(seg, context):
