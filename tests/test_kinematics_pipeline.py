@@ -241,9 +241,18 @@ class TaskTest(unittest.TestCase):
         self.assertEqual(mv.loc[8, "trial"], 1)
         self.assertAlmostEqual(mv.loc[8, "latency_from_go"], 0.05, places=4)
         self.assertEqual(mv.loc[8, "number_in_trial"], 1)
-        self.assertEqual(mv.loc[21, "trial"], 2)
+        # movement 21 spans the go cue at 2.03 s: no trial
         self.assertTrue(mv.loc[21, "spans_go_cue"])
+        self.assertTrue(pd.isna(mv.loc[21, "trial"]))
+        self.assertTrue(pd.isna(mv.loc[21, "latency_from_go"]))
+        self.assertTrue(pd.isna(mv.loc[21, "number_in_trial"]))
         self.assertFalse(mv.loc[20, "spans_go_cue"])
+        self.assertEqual(mv.loc[20, "trial"], 2)
+        self.assertEqual(mv.loc[22, "number_in_trial"], 1)
+        # the last trial ends 1.5 s (the longest go-cue interval) after
+        # its go cue, at 3.53 s: movement 31 starts at 3.5, 32 at 3.65
+        self.assertEqual(mv.loc[31, "trial"], 3)
+        self.assertTrue(pd.isna(mv.loc[32, "trial"]))
         self.assertEqual(mv.loc[9, "n_licks"], 1)
         self.assertTrue(mv.loc[9, "cue_response"])
         self.assertEqual(mv.loc[9, "lick_side"], "left")
@@ -286,6 +295,8 @@ class TaskTest(unittest.TestCase):
         self.assertEqual(tr.loc[1, "n_licks"], 3)
         self.assertAlmostEqual(tr.loc[1, "lick_coverage"], 2 / 3)
         self.assertEqual(tr.loc[2, "n_lick_movements"], 1)
+        self.assertEqual(tr.loc[2, "n_movements"], 3)  # not the spanning one
+        self.assertEqual(tr.loc[3, "n_movements"], 10)  # capped window
         self.assertIn("animal_response", tr)
         q = self.result["record"]["quality"]
         self.assertAlmostEqual(q["lick_coverage"], 0.6)

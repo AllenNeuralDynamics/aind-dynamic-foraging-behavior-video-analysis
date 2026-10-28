@@ -10,8 +10,9 @@ files, clock and events:
   NWB ``*_in_session`` trial columns and lick ``timestamps``). The record
   keeps ``time_zero``, the Harp time of session time 0.
 * **Events**: licks are matched to the movement and the submovement they
-  fall in; each movement gets its trial (last go cue at or before it
-  starts) and lick details; each trial gets a summary of its movements.
+  fall in; each movement gets its trial (the go cue before it starts; none
+  if it spans a go cue) and lick details; each trial gets a summary of its
+  movements.
 
 Outputs (``pipeline.write``): ``pose, kinematics, landmarks, movements,
 submovements, bouts`` as in ``pipeline``, plus ``trials`` (the NWB trials
@@ -201,6 +202,19 @@ def _lick_side(event):
     return s.str.extract(r"(left|right)", expand=False)
 
 
+def trial_windows(trials):
+    """``trial, start_time, end_time`` per trial: from its go cue to the
+    next go cue. The last trial ends after the longest go-cue-to-go-cue
+    interval of the session, so it does not take in the video after the
+    task ends (it runs to infinity when there is only one trial)."""
+    tr = trials.sort_values("goCue_start_time_in_session")
+    go = tr["goCue_start_time_in_session"].to_numpy(float)
+    last = go[-1] + np.diff(go).max() if len(go) > 1 else np.inf
+    return pd.DataFrame({"trial": tr["trial"].to_numpy(), "start_time": go,
+                         "end_time": np.r_[go[1:], last] if len(go)
+                         else go})
+
+
 def annotate_movements(movements, trials, licks, lick_tolerance_s=0.001):
     """Trial and lick columns for each movement; movement for each lick.
 
@@ -221,34 +235,37 @@ def annotate_movements(movements, trials, licks, lick_tolerance_s=0.001):
     Returns
     -------
     movements : pandas.DataFrame
-        Adds ``trial`` (last go cue at or before the start; NA before the
-        first), ``go_cue_time``, ``latency_from_go``, ``spans_go_cue``
-        (a go cue falls inside the movement), ``number_in_trial``,
+        Adds ``spans_go_cue`` (a go cue falls inside the movement);
+        ``trial`` (the window of ``trial_windows`` the movement starts in;
+        NA before the first go cue, after the last trial's end, and when
+        ``spans_go_cue``), and for movements with a trial ``go_cue_time``,
+        ``latency_from_go`` and ``number_in_trial`` (NA otherwise);
         ``n_licks``, and from the first lick ``lick_time``,
-        ``cue_response``, ``rewarded``, ``lick_side``.
+        ``cue_response``, ``rewarded``, ``lick_side`` (kept for spanning
+        movements: they describe the lick).
     licks : pandas.DataFrame
         Adds ``movement_id``, ``closest_movement_id`` and
         ``closest_movement_offset_s`` (see ``match_licks``).
     """
     mv = movements.sort_values("start_time", kind="stable").copy()
-    tr = trials.sort_values("goCue_start_time_in_session")
-    go = tr["goCue_start_time_in_session"].to_numpy(float)
-    trial_ids = tr["trial"].to_numpy()
+    win = trial_windows(trials)
+    go = win["start_time"].to_numpy(float)
     st = mv["start_time"].to_numpy(float)
     en = mv["end_time"].to_numpy(float)
 
     row = np.searchsorted(go, st, side="right") - 1
-    has = row >= 0
-    mv["trial"] = pd.array(
-        np.where(has, trial_ids[np.maximum(row, 0)], 0), dtype="Int64")
-    mv.loc[~has, "trial"] = pd.NA
-    mv["go_cue_time"] = np.where(has, go[np.maximum(row, 0)], np.nan)
-    mv["latency_from_go"] = st - mv["go_cue_time"]
     nxt = np.minimum(row + 1, len(go) - 1)
     mv["spans_go_cue"] = (row + 1 < len(go)) & (go[nxt] < en)
-    mv["number_in_trial"] = pd.array(
-        mv.groupby("trial").cumcount().to_numpy() + 1, dtype="Int64")
-    mv.loc[~has, "number_in_trial"] = pd.NA
+    r = np.maximum(row, 0)
+    has = ((row >= 0) & ~mv["spans_go_cue"].to_numpy()
+           & (st < win["end_time"].to_numpy()[r]))
+    mv["trial"] = pd.array(win["trial"].to_numpy()[r], dtype="Int64")
+    mv.loc[~has, "trial"] = pd.NA
+    mv["go_cue_time"] = np.where(has, go[r], np.nan)
+    mv["latency_from_go"] = st - mv["go_cue_time"]
+    mv["number_in_trial"] = pd.array([pd.NA] * len(mv), dtype="Int64")
+    mv.loc[has, "number_in_trial"] = (
+        mv[has].groupby("trial").cumcount().to_numpy() + 1)
 
     mv, lk = match_licks(mv, licks, "movement_id", lick_tolerance_s)
     return mv.sort_index(), lk
@@ -351,15 +368,14 @@ def summarize_trials(trials, movements, licks):
     ``first_movement_latency``, ``cue_response_movement_id``,
     ``cue_response_movement_number``, ``lick_latency`` (first cue-response
     lick after the go cue), ``n_licks`` and ``lick_coverage`` (fraction of
-    the trial's licks matched to a movement). A trial runs from its go cue
-    to the next one.
+    the trial's licks matched to a movement). Trials are the windows of
+    ``trial_windows``; movement summaries count only movements with a
+    ``trial`` (so not those spanning a go cue), lick summaries every lick
+    in the window.
     """
-    tr = trials.sort_values("goCue_start_time_in_session").reset_index(
-        drop=True)
-    go = tr["goCue_start_time_in_session"].to_numpy(float)
-    win = pd.DataFrame({"trial": tr["trial"].to_numpy(), "start_time": go,
-                        "end_time": np.r_[go[1:], np.inf]})
-    mv = movements.assign(has_lick=movements["n_licks"] > 0)
+    win = trial_windows(trials)
+    mv = movements[movements["trial"].notna()]
+    mv = mv.assign(has_lick=mv["n_licks"] > 0)
     out = summarize_by_window(mv, win, "start_time", {
         "n_movements": (None, "count"),
         "n_lick_movements": ("has_lick", "sum"),
