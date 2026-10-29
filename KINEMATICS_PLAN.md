@@ -132,6 +132,7 @@ then be removed, so there is one way to merge.
 |---|---|
 | `path` | `path_length, displacement, peak_speed, mean_speed` |
 | `excursion` | `amplitude, end_x, end_y, start_x, start_y, angle_deg, extent_x, extent_y` (relative to the reference) |
+| `extremes` | `x_max, y_at_x_max, x_min, y_at_x_min, y_max, x_at_y_max, y_min, x_at_y_min, y_at_extent_x, x_at_extent_y` (largest and smallest position along each axis, relative to the reference, with the other coordinate at that frame) |
 | `outbound` | `out_duration, out_path_length, out_peak_speed, out_mean_speed` (first frame to farthest frame) |
 | `spectrum` | `dominant_hz, band_power, band_fraction` (Welch; for continuous signals) |
 
@@ -153,7 +154,7 @@ settings = pl.Settings(
             smooth=pl.Smooth(cutoff_hz=50.0, order=4, max_gap_s=0.02),
             segments={
                 "movement": pl.Segmentation("tracked_runs", {"max_gap_frames": 10},
-                                            features=("path", "excursion", "outbound")),
+                                            features=("path", "excursion", "extremes", "outbound")),
                 "submovement": pl.Segmentation("zero_crossings", within="movement",
                                                features=("path",)),
                 "bout": pl.Segmentation("bouts", {"of": "movement", "max_gap_s": 0.5,
@@ -300,8 +301,8 @@ largest of noisy values).
 | `total_distance, peak_velocity, mean_velocity` | `path_length, peak_speed, mean_speed` |
 | `min_x … max_yv` | dropped (absolute pixels / redundant) |
 | `startpoint_x/y`, `endpoint_x/y` (absolute) | `start_x/y`, `end_x/y` relative to the median jaw |
-| `max_x_distance`, `max_y_distance` | `max_y_distance` = `abs(extent_y)`. `max_x_distance` was the most *positive* x offset; `extent_x` is the offset farthest in either direction, so they differ where a movement reaches farther in −x (12% of movements in the pooled 04022026 table) |
-| `max_x_from_jaw`, `max_y_from_jaw`, `max_*_from_jaw_*` | dropped (absolute pixels; `extent_*` + landmark if needed) |
+| `max_x_distance`, `max_y_distance` | `abs(x_max)`, `abs(extent_y)` (0.5.3, `extremes`). `max_x_distance` was the most *positive* x offset; `extent_x` is the offset farthest in either direction, so it differs from `max_x_distance` where a movement reaches farther in −x (12% of movements in the pooled 04022026 table) |
+| `max_x_from_jaw`, `max_y_from_jaw`, `max_*_from_jaw_*` | relative to the jaw: `x_max`, `extent_y`, `y_at_x_max`, `x_at_extent_y` (0.5.3, `extremes`); add the landmark for absolute pixels |
 | `time_to_endpoint` | `out_duration` (they were equal) |
 | `excursion_angle_deg` | `angle_deg` |
 | `out_total_distance, out_peak_velocity, out_mean_velocity` | `out_path_length, out_peak_speed, out_mean_speed` |
@@ -401,6 +402,9 @@ Run with `kinematics_analysis/.venv-fip` (Python 3.12, pandas 2.3, numpy 2.0, sc
 
 ## Changes
 
+- 0.5.3 (2026-10-29): `extremes` feature group (largest and smallest position along each axis,
+  with the other coordinate at that frame), in `TONGUE_SETTINGS` for movements and submovements;
+  reproduces the old `max_x_distance`, `max_y_distance` and `max_*_from_jaw_*`.
 - 0.5.2 (2026-10-28): movements spanning a go cue get no trial (as before 0.5.0); the last
   trial ends one longest go-cue interval after its go cue; `max_x_distance` map row corrected.
 - 0.5.1 (2026-10-27): `ignore_trial_errors` and `reward_before_choice` (Dynamic foraging task

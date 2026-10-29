@@ -71,8 +71,9 @@ dft.quality_summary("out/<session>")                   # lick_coverage, movement
   they move, like a tongue), `above_threshold` (always-visible parts, by
   speed or any signal), `zero_crossings` / `speed_minima` (split segments at
   direction changes or speed dips), `bouts` (group close segments).
-- **Features** (`features`): `path`, `excursion` and `outbound` (relative
-  to a reference landmark, never absolute pixels), `spectrum` (rhythm).
+- **Features** (`features`): `path`, `excursion`, `extremes` and
+  `outbound` (relative to a reference landmark, never absolute pixels),
+  `spectrum` (rhythm).
   Add a group with `features.add_feature_group`.
 - **Windows** (`intervals`): `interval_of`, `summarize_by_window`,
   `time_bins` answer "which movement was each lick in", "movements per
@@ -351,6 +352,18 @@ frames.
 
 
 ## Changes
+
+### 0.5.3 (2026-10-29)
+
+- **New:** feature group `extremes`: the largest and smallest position
+  along each axis relative to the reference (`x_max, x_min, y_max, y_min`),
+  each with the other coordinate at that frame (`y_at_x_max`, ...), and the
+  other coordinate at `extent_x` / `extent_y` (`y_at_extent_x`,
+  `x_at_extent_y`). `TONGUE_SETTINGS` adds it to movements and
+  submovements, so the batch writes these columns. They reproduce the
+  columns before 0.5.0: `max_x_distance` = `abs(x_max)`, `max_y_distance` =
+  `abs(extent_y)`, `max_x_from_jaw_y` / `max_y_from_jaw_x` = `y_at_x_max` /
+  `x_at_extent_y` plus the jaw landmark.
 
 ### 0.5.2 (2026-10-28)
 

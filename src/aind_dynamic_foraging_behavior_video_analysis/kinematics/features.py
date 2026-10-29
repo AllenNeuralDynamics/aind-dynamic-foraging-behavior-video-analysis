@@ -18,6 +18,10 @@ Built-in groups:
              moment), ``start_x, start_y``, ``angle_deg`` (direction of
              the end point), ``extent_x, extent_y`` (signed position
              farthest from the reference along each axis)
+``extremes`` relative to the reference point: ``x_max, x_min, y_max,
+             y_min`` (largest and smallest position along each axis),
+             each with the other coordinate at that frame
+             (``y_at_x_max``, ...), and ``y_at_extent_x, x_at_extent_y``
 ``outbound`` from the first frame to the moment of ``amplitude``:
              ``out_duration, out_path_length, out_peak_speed,
              out_mean_speed``
@@ -112,6 +116,45 @@ def excursion(seg, context):
         "angle_deg": float(np.degrees(np.arctan2(ry[i], rx[i]))),
         "extent_x": float(rx[np.argmax(np.abs(rx))]),
         "extent_y": float(ry[np.argmax(np.abs(ry))]),
+    }
+
+
+_EXTREMES_NAN = dict.fromkeys(
+    ["x_max", "y_at_x_max", "x_min", "y_at_x_min",
+     "y_max", "x_at_y_max", "y_min", "x_at_y_min",
+     "y_at_extent_x", "x_at_extent_y"], np.nan)
+
+
+@add_feature_group("extremes")
+def extremes(seg, context):
+    """The segment's extreme points along each axis, relative to the
+    reference point, with the other coordinate at the same frame.
+
+    ``x_max, y_at_x_max``, ``x_min, y_at_x_min``, ``y_max, x_at_y_max``,
+    ``y_min, x_at_y_min``: the largest and smallest position along each
+    axis. ``y_at_extent_x``, ``x_at_extent_y``: the other coordinate at the
+    frames of ``excursion``'s ``extent_x`` / ``extent_y`` (farthest from
+    the reference in either direction). The farthest point overall is
+    ``excursion``'s ``amplitude, end_x, end_y``. Ties go to the first frame.
+
+    Before 0.5.0, ``max_x_distance`` was ``abs(x_max)``, ``max_y_distance``
+    ``abs(extent_y)``, and ``max_x_from_jaw_y`` / ``max_y_from_jaw_x`` were
+    ``y_at_x_max`` / ``x_at_extent_y`` in absolute pixels (add the
+    landmark).
+    """
+    _, rx, ry, _ = _relative(seg, context)
+    if len(rx) == 0:
+        return dict(_EXTREMES_NAN)
+    ix_max, ix_min = int(np.argmax(rx)), int(np.argmin(rx))
+    iy_max, iy_min = int(np.argmax(ry)), int(np.argmin(ry))
+    ix_ext, iy_ext = int(np.argmax(np.abs(rx))), int(np.argmax(np.abs(ry)))
+    return {
+        "x_max": float(rx[ix_max]), "y_at_x_max": float(ry[ix_max]),
+        "x_min": float(rx[ix_min]), "y_at_x_min": float(ry[ix_min]),
+        "y_max": float(ry[iy_max]), "x_at_y_max": float(rx[iy_max]),
+        "y_min": float(ry[iy_min]), "x_at_y_min": float(rx[iy_min]),
+        "y_at_extent_x": float(ry[ix_ext]),
+        "x_at_extent_y": float(rx[iy_ext]),
     }
 
 
