@@ -304,7 +304,7 @@ Other helpers: `intervals.interval_of(times, starts, ends)` (which interval each
 | `pl.KeypointSettings` | `name` | required | Keypoint name as in the pose table |
 | | `min_likelihood` | 0.9 | Points below this confidence count as missing |
 | | `smooth` | `pl.Smooth()` | Smoothing |
-| | `reference` | None | Landmark to measure from; enables radial velocity, `excursion`, `outbound`, `zero_crossings` |
+| | `reference` | None | Landmark to measure from; enables radial velocity, `excursion`, `extremes`, `outbound`, `zero_crossings` |
 | | `flip_x`, `flip_y` | False | Mirror positions measured from the reference |
 | | `segments` | `{}` | `{kind: pl.Segmentation}`, run in order |
 | | `feature_options` | `{}` | `{group: {option: value}}`, e.g. for `spectrum` |
@@ -333,6 +333,7 @@ Other helpers: `intervals.interval_of(times, starts, ends)` (which interval each
 |---|---|---|
 | `path` | `path_length, displacement, peak_speed, mean_speed` | |
 | `excursion` | `amplitude, end_x, end_y, start_x, start_y, angle_deg, extent_x, extent_y` | `reference` |
+| `extremes` | `x_max, y_at_x_max, x_min, y_at_x_min, y_max, x_at_y_max, y_min, x_at_y_min, y_at_extent_x, x_at_extent_y` | `reference` |
 | `outbound` | `out_duration, out_path_length, out_peak_speed, out_mean_speed` | `reference` |
 | `spectrum` | `dominant_hz, band_power, band_fraction` | options: `column` ("speed"), `band` ((2, 20)), `min_duration_s` (0.5) |
 
@@ -352,7 +353,7 @@ Units: pixels, seconds, pixels per second, degrees. Ids start at 1, in time orde
 
 - **`pose needs a time column`**: run `signal.add_time` first, or use a saved `pose.parquet`.
 - **`zero_crossings needs column 'radial_velocity'`**: give the keypoint a `reference`.
-- **`this feature group needs a reference point`**: `excursion` and `outbound` need a
+- **`this feature group needs a reference point`**: `excursion`, `extremes` and `outbound` need a
   `reference` too.
 - **A `KeyError` naming a kind**: `within` or `of` refers to a kind that is not listed earlier
   in `segments`.

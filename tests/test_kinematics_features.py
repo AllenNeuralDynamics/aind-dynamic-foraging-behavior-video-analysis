@@ -47,7 +47,7 @@ class FeatureGroupTest(unittest.TestCase):
         self.assertTrue(np.isnan(row["out_peak_speed"]))
 
     def test_all_missing_gives_nan(self):
-        groups = ["path", "excursion", "outbound"]
+        groups = ["path", "excursion", "extremes", "outbound"]
         row = one(frames([np.nan, np.nan]), groups)
         self.assertTrue(row.isna().all())
 
@@ -65,6 +65,40 @@ class FeatureGroupTest(unittest.TestCase):
         flipped = one(frames([1, 2, 3, 2], [0, 1, 1, 1]), ["excursion"],
                       origin=(1.0, 0.0), flip_x=True)
         self.assertEqual(flipped["end_x"], -2.0)
+
+    def test_extremes(self):
+        # Relative to (1, 0): x = 0, 2, -3, 1; y = 0, 4, -1, -2
+        row = one(frames([1, 3, -2, 2], [0, 4, -1, -2]), ["extremes"],
+                  origin=(1.0, 0.0))
+        self.assertEqual((row["x_max"], row["y_at_x_max"]), (2.0, 4.0))
+        self.assertEqual((row["x_min"], row["y_at_x_min"]), (-3.0, -1.0))
+        self.assertEqual((row["y_max"], row["x_at_y_max"]), (4.0, 2.0))
+        self.assertEqual((row["y_min"], row["x_at_y_min"]), (-2.0, 1.0))
+        self.assertEqual(row["y_at_extent_x"], -1.0)   # extent_x = -3
+        self.assertEqual(row["x_at_extent_y"], 2.0)    # extent_y = 4
+
+    def test_extremes_reproduce_the_old_columns(self):
+        # aggregate_tongue_movements before 0.5.0: max_x_distance =
+        # |x - jaw| at the most positive x offset; max_y_distance = largest
+        # |y - jaw|; *_from_jaw_* = the other coordinate there, absolute.
+        rng = np.random.default_rng(0)
+        jaw = np.array([40.0, 25.0])
+        for _ in range(50):
+            xs = rng.normal(jaw[0], 10, 12)
+            ys = rng.normal(jaw[1], 10, 12)
+            row = one(frames(xs, ys), ["excursion", "extremes"],
+                      origin=tuple(jaw))
+            dx, dy = xs - jaw[0], np.abs(ys - jaw[1])
+            ix, iy = int(np.argmax(dx)), int(np.argmax(dy))
+            self.assertAlmostEqual(abs(row["x_max"]), abs(xs[ix] - jaw[0]))
+            self.assertAlmostEqual(row["y_at_x_max"] + jaw[1], ys[ix])
+            self.assertAlmostEqual(abs(row["extent_y"]), dy[iy])
+            self.assertAlmostEqual(row["x_at_extent_y"] + jaw[0], xs[iy])
+
+    def test_extremes_follow_flips(self):
+        row = one(frames([1, 3, -2]), ["extremes"], origin=(0.0, 0.0),
+                  flip_x=True)
+        self.assertEqual((row["x_max"], row["x_min"]), (2.0, -3.0))
 
     def test_needs_reference_point(self):
         with self.assertRaises(ValueError):

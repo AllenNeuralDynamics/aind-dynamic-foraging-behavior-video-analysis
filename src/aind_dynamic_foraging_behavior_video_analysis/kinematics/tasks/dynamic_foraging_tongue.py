@@ -58,14 +58,14 @@ TONGUE_SETTINGS = pl.Settings(
             segments={
                 "movement": pl.Segmentation(
                     "tracked_runs", {"max_gap_frames": 10},
-                    features=("path", "excursion", "outbound")),
+                    features=("path", "excursion", "extremes", "outbound")),
                 # Every reversal is kept (no minimum length): which pieces
                 # are real is decided downstream, from the saved
                 # radial_velocity_sum / _peak per piece.
                 "submovement": pl.Segmentation(
                     "zero_crossings", {"max_gap_frames": 3},
                     within="movement",
-                    features=("path", "excursion", "outbound")),
+                    features=("path", "excursion", "extremes", "outbound")),
                 "bout": pl.Segmentation(
                     "bouts", {"of": "movement", "max_gap_s": 0.5,
                               "min_count": 2}),
