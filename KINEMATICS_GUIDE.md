@@ -284,6 +284,9 @@ per_10s = intervals.summarize_by_window(          # fixed bins are windows too
     {"n": (None, "count")})
 ```
 
+Whole trials as windows: `dft.trial_windows(trials)`, the ones `trials.parquet` is summarized
+over (go cue to next go cue; the last trial ends one longest go-cue interval after its go cue).
+
 Other helpers: `intervals.interval_of(times, starts, ends)` (which interval each time is in),
 `intervals.closest_interval(times, starts, ends)` (the closest, and how far),
 `intervals.nearest(times, targets, tolerance)`.

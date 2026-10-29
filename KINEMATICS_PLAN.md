@@ -237,8 +237,10 @@ largest of noisy values).
   drop trials, not sessions. Off by default; saved in the record (`nwb.ignore_trial_errors`).
 - `run_batch(screen=...)` takes the `video_screen` table and skips sessions whose camera is not
   in use (`excluded: <reason>`) or was not screened.
-- Movements get `trial` (last go cue at or before the start), `go_cue_time`,
-  `latency_from_go`, `spans_go_cue`, `number_in_trial`, `n_licks`, and from the first lick
+- Movements get `spans_go_cue`; `trial` (the go cue before the start; NA when the movement
+  spans a go cue, before the first go cue, or after the last trial, which ends one longest
+  go-cue interval after its go cue: `trial_windows`), and for movements with a trial
+  `go_cue_time`, `latency_from_go`, `number_in_trial`; `n_licks`, and from the first lick
   `lick_time, cue_response, rewarded, lick_side`. `cue_response`/`rewarded` are real booleans.
 - Trials table = NWB trials plus `n_movements, n_lick_movements, first_movement_id,
   first_movement_latency, cue_response_movement_id, cue_response_movement_number, lick_latency,
@@ -298,14 +300,14 @@ largest of noisy values).
 | `total_distance, peak_velocity, mean_velocity` | `path_length, peak_speed, mean_speed` |
 | `min_x … max_yv` | dropped (absolute pixels / redundant) |
 | `startpoint_x/y`, `endpoint_x/y` (absolute) | `start_x/y`, `end_x/y` relative to the median jaw |
-| `max_x_distance`, `max_y_distance` | `abs(extent_x)`, `abs(extent_y)` (signed, relative) |
+| `max_x_distance`, `max_y_distance` | `max_y_distance` = `abs(extent_y)`. `max_x_distance` was the most *positive* x offset; `extent_x` is the offset farthest in either direction, so they differ where a movement reaches farther in −x (12% of movements in the pooled 04022026 table) |
 | `max_x_from_jaw`, `max_y_from_jaw`, `max_*_from_jaw_*` | dropped (absolute pixels; `extent_*` + landmark if needed) |
 | `time_to_endpoint` | `out_duration` (they were equal) |
 | `excursion_angle_deg` | `angle_deg` |
 | `out_total_distance, out_peak_velocity, out_mean_velocity` | `out_path_length, out_peak_speed, out_mean_speed` |
 | `has_lick, lick_count, first_lick_index` | `n_licks > 0`, `n_licks`, licks' `movement_id` |
 | `lick_time, cue_response, rewarded, event` | same, `lick_side` ('left'/'right') replaces `event` |
-| `trial` (NA when spanning a go cue) | `trial` + `spans_go_cue` |
+| `trial` (NA when spanning a go cue) | `trial` (still NA when spanning; also NA after the last trial's end) + `spans_go_cue` |
 | `goCue_start_time_in_session` | `go_cue_time` |
 | `movement_number_in_trial, movement_latency_from_go` | `number_in_trial, latency_from_go` |
 | `cue_response_movement_number, lick_latency`, `movement_before_cue_response` | on `trials`; `number_in_trial < cue_response_movement_number` |
@@ -399,6 +401,8 @@ Run with `kinematics_analysis/.venv-fip` (Python 3.12, pandas 2.3, numpy 2.0, sc
 
 ## Changes
 
+- 0.5.2 (2026-10-28): movements spanning a go cue get no trial (as before 0.5.0); the last
+  trial ends one longest go-cue interval after its go cue; `max_x_distance` map row corrected.
 - 0.5.1 (2026-10-27): `ignore_trial_errors` and `reward_before_choice` (Dynamic foraging task
   module).
 - Revision 4 (2026-10-27): strict lick matching restored (half a frame) with

@@ -352,6 +352,19 @@ frames.
 
 ## Changes
 
+### 0.5.2 (2026-10-28)
+
+- **Changed behavior:** a movement spanning a go cue gets no trial again
+  (`trial`, `go_cue_time`, `latency_from_go`, `number_in_trial` NA), as
+  before 0.5.0; `spans_go_cue` still marks it, and its lick columns
+  (`cue_response`, ...) still describe its first lick. Trial summaries leave
+  these movements out, so a trial no longer takes a cue response from a
+  movement that started before the next trial's go cue.
+- **Changed behavior:** the last trial ends after the session's longest
+  go-cue-to-go-cue interval (`dynamic_foraging_tongue.trial_windows`), not
+  at the end of the video: movements after it get no trial, and the last
+  trial's counts no longer include the video after the task ends.
+
 ### 0.5.1 (2026-10-27)
 
 - **New:** `dynamic_foraging_tongue.run_batch(..., ignore_trial_errors=True)`
@@ -383,7 +396,8 @@ frames.
 - **Changed behavior:** smoothing runs per tracked run, so nothing is
   interpolated across long gaps; positions in features are relative to the
   session's median jaw position (was the mean of all jaw points);
-  movements spanning a go cue keep their trial and get `spans_go_cue`.
+  movements spanning a go cue keep their trial and get `spans_go_cue`
+  (reverted in 0.5.2).
   On five Code Ocean sessions movements are identical, interior speeds
   unchanged, edge-frame speeds within about ±5%, the jaw 3-6 px off the old
   one (angles 3-5°). Licks are matched as before (inside the movement,
